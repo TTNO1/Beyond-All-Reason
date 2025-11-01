@@ -1305,6 +1305,117 @@ local options = {
         section = "options_experimental",
         def 	= false,
     },
+    
+    {
+        key     = "sub_header",
+        name    = "----------------------------------------------------------------------------------------------------------------------------------------",
+        desc    = "",
+        section = "options_experimental",
+        type    = "subheader",
+        def     =  true,
+    },
+    
+    {
+        key     = "sub_header",
+        name    = "King of the Hill",
+        desc    = "",
+        section = "options_experimental",
+        type    = "subheader",
+        def     =  true,
+    },
+    
+    {
+        key     = "sub_header",
+        name    = "----------------------------------------------------------------------------------------------------------------------------------------",
+        desc    = "",
+        section = "options_experimental",
+        type    = "subheader",
+        def     =  true,
+    },
+    
+    {
+        key    	= "kingofthehillenabled",
+        name   	= "Enable King of the Hill Game Mode",
+        desc   	= "The team that occupies the \"hill\" for the longest time wins",
+        type   	= "bool",
+        section = "options_experimental",
+        def  	= false,
+    },
+    
+    {
+        key    	= "kingofthehillgameduration",
+        name   	= "Game Duration",
+        desc   	= "After this number of minutes, the team that occupied the hill for the most time wins",
+        type   	= "number",
+        section = "options_experimental",
+        def  	= 30,
+        min    	= 1,
+        max    	= 28000,
+        step   	= 1,
+    },
+    
+    {
+        key    	= "kingofthehillarea",
+        name   	= "Hill Area",
+        desc   	= "Define the hill area. Can be either a rectangle or a circle. Arguments are as follows.\n\"rect {left} {top} {right} {bottom}\"\n\"circle {x} {z} {radius}\"\nValues are from 0 to 200 where (0,0) is bottom left and (200,200) is top right.",
+        type   	= "string",
+        section = "options_experimental",
+        def  	= "rect 75 125 125 75",
+    },
+    
+    {
+        key    	= "kingofthehillcapturedelay",
+        name   	= "Capture Delay",
+        desc   	= "The time in seconds that a team must occupy the hill to capture it",
+        type   	= "number",
+        section = "options_experimental",
+        def  	= 20,
+        min    	= 1,
+        max    	= 500,
+        step   	= 1,
+    },
+    
+    {
+        key    	= "kingofthehillrespawntime",
+        name   	= "Respawn Time",
+        desc   	= "The time in seconds that a dead commander takes to respawn",
+        type   	= "number",
+        section = "options_experimental",
+        def  	= 30,
+        min    	= 0,
+        max    	= 5000,
+        step   	= 1,
+    },
+    
+    {
+        key    	= "kingofthehillhealthmultiplier",
+        name   	= "Health Multiplier",
+        desc   	= "Multiplier applied to default commander health",
+        type   	= "number",
+        section = "options_experimental",
+        def  	= 2.7,
+        min    	= 0.01,
+        max    	= 5000,
+        step   	= 0.01,
+    },
+    
+    {
+        key    	= "kingofthehillbuildoutsideboxes",
+        name   	= "Prevent Building Outside Start Areas",
+        desc   	= "If enabled, players can only build inside their team's starting area and the hill when captured",
+        type   	= "bool",
+        section = "options_experimental",
+        def  	= true,
+    },
+    
+    {
+        key    	= "kingofthehillkinggloballos",
+        name   	= "King Global LOS",
+        desc   	= "If enabled, the king will have global LOS for the duration his reign",
+        type   	= "bool",
+        section = "options_experimental",
+        def  	= true,
+    },
 
     ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
