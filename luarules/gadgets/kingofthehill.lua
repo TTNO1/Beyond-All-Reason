@@ -30,8 +30,7 @@
 -- Documentation
 --
 -- This gadget adds the synced functionality for a King of the Hill game mode. In this game mode,
--- the ally team that spends the most amount of time as the "king" wins. The game ends and
--- the winner is determined after a configurable amount of time elapses. The hill is a
+-- an ally team wins by spending a certain amount of time as "king. The hill is a
 -- configurable circular or square cylinder on the map. An ally team becomes the king by
 -- being the only team with "capture-qualified units" in the hill for a configurable
 -- amount of time. Capture-qualified units are a set of units that are
@@ -42,7 +41,26 @@
 -- and the hill when they are king. Moreover, when an ally team loses the throne (transitions
 -- from king to not-king) all buildings belonging to that team in the hill are exploded.
 --
+-- The main game logic takes place in the gadget:GameFrame method. Every couple of frames,
+-- it checks where all capture-qualified units are and determines what the game state
+-- should be based on what teams are in and out of the hill.
+--
 -- Note: In all comments and documentation, "holding the hill" means the same thing as being the king.
+--
+-- There are a number of classes used in this gadget which are explained below.
+-- Set:
+--   The set class is just a collection of stuff. It mimics the Java Set class.
+-- RulesParamDataWrapper:
+--   A class that wraps any variable that is shared with the client (UI widget) about the game state.
+--   The purpose of this class is to avoid sending data to the client if it is not necessary (if it
+--   has not changed value).
+-- MapArea:
+--   Defines an area on the map such as a startbox or the hill region. This class has subclasses
+--   for each shape.
+-- RectMapArea:
+--   A subclass of MapArea for rectangular areas.
+-- CircleMapArea:
+--   A subclass of MapArea for circular areas.
 --
 -- TODO: add more documentation
 --
@@ -69,7 +87,6 @@ end
 -- #region Global Constants and Functions
 local Spring = Spring
 local Game = Game
-local CMD = CMD
 local mapSizeX = Game.mapSizeX
 local mapSizeZ = Game.mapSizeZ
 local UnitDefs = UnitDefs
@@ -82,7 +99,7 @@ local fps = Game.gameSpeed
 -- /////////////////////////////
 
 -- ---- Util Classes ----
--- -------------------
+-- ----------------------
 
 --A Set class based on the Java API Set
 local Set = {
@@ -185,8 +202,8 @@ function RulesParamDataWrapper:setAndSend(value)
 	self:send()
 end
 
--- ---- Util Functions ----
--- -------------------
+-- ---- Util Functions & Variables ----
+-- ------------------------------------
 
 local tonumber = tonumber
 
@@ -227,9 +244,6 @@ local function dump(o)
 	   return tostring(o)
 	end
  end
-
--- ---- Util Variables ----
--- -------------------
 
 -- /////////////////////////////
 -- #endregion  Utils
@@ -329,11 +343,11 @@ local hillArea
 -- whether or not players can build outside of their start area or the captured hill
 local buildOutsideBoxes
 
--- game duration in milliseconds
-local gameDuration
+-- the total time needed as king to win
+local winKingTime
 
--- gameDuration in frames
-local gameDurationFrames
+-- winKingTime in frames
+local winKingTimeFrames
 
 -- the number of milliseconds an ally team must occupy the hill to capture it
 local captureDelay
@@ -381,6 +395,9 @@ local kingStartFrame = RulesParamDataWrapper.new({paramName = "kingStartFrame"})
 -- does not reflect the duration of the current king's reign--these values are only updated when the king changes
 local allyTeamKingTime = {}
 
+-- the frame at which the current king will win if he remains king
+local kingWinFrame = math.maxinteger
+
 -- the allyTeamId of the ally team currently in the process of capturing the hill
 local capturingAllyTeam = RulesParamDataWrapper.new({paramName = "capturingAllyTeam"})
 
@@ -398,6 +415,7 @@ local capturingCountingUp = RulesParamDataWrapper.new({paramName = "capturingCou
 --TODO left off: figure out how to make building footprint red when outside box in widget ---- NVM not possible
 --TODO Saved Games??
 --TODO add GG api functns
+--TODO mod options for buildings exploding in hill, no damage in startbox
 
 
 -- Parses the string modoption that defines the hill area and returns a MapArea object
@@ -456,8 +474,8 @@ function gadget:Initialize()
 	--Get and parse KOTH related mod options
 	hillArea = parseAreaString(modOptions.kingofthehillarea)
 	buildOutsideBoxes = not modOptions.kingofthehillbuildoutsideboxes
-	gameDuration = (tonumber(modOptions.kingofthehillgameduration) or 30) * 60 * 1000
-	gameDurationFrames = fps * gameDuration / 1000
+	winKingTime = (tonumber(modOptions.kingofthehillwinKingTime) or 10) * 60 * 1000
+	winKingTimeFrames = fps * winKingTime / 1000
 	captureDelay = (tonumber(modOptions.kingofthehillcapturedelay) or 20) * 1000
 	captureDelayFrames = fps * captureDelay / 1000
 	healthMultiplier = tonumber(modOptions.kingofthehillhealthmultiplier) or 1
@@ -509,6 +527,14 @@ local function setKingGlobalLOS(value)
 	end
 end
 
+-- Destroys all hill buildings only if the mod option is enabled
+local function destroyHillBuildings()
+	for building in hillBuildings:iter() do
+		Spring.DestroyUnit(building)
+	end
+	hillBuildings:clear()
+end
+
 -- A function that updates capturingCompleteFrame when capturingCountingUp is reversed
 local function setCapturingCountingUp(value, currentFrame)
 	if(value == capturingCountingUp.value) then
@@ -553,6 +579,11 @@ function gadget:GameFrame(frame)
 		end
 	end
 	
+	-- End the game if the king won
+	if frame >= kingWinFrame then
+		Spring.GameOver(kingAllyTeam.value)
+	end
+	
 	-- Capture the hill if the captureDelay has elapsed
 	if frame >= capturingCompleteFrame.value then
 		if kingAllyTeam.value and not capturingCountingUp.value then
@@ -561,37 +592,15 @@ function gadget:GameFrame(frame)
 			kingTime:setAndSend(kingTime.value + frame - kingStartFrame.value)
 			setKingGlobalLOS(false)
 			kingAllyTeam:setAndSend(nil)
-			for building in hillBuildings:iter() do
-				Spring.DestroyUnit(building)
-			end
-			hillBuildings:clear()
+			destroyHillBuildings()
+			kingWinFrame = math.maxinteger
 		elseif not kingAllyTeam.value and capturingCountingUp.value then
-			-- Set the new king and the king starting frame
+			-- Set the new king and the king starting/win frame
 			kingAllyTeam:setAndSend(capturingAllyTeam.value)
 			kingStartFrame:setAndSend(frame)
 			setKingGlobalLOS(true)
+			kingWinFrame = frame + winKingTimeFrames - allyTeamKingTime[kingAllyTeam.value].value
 		end
-	end
-	
-	-- End the game if it is over
-	if frame >= gameDurationFrames then
-		-- Add current king time before comparing
-		if kingAllyTeam.value then
-			local kingTime = allyTeamKingTime[kingAllyTeam.value]
-			kingTime:setAndSend(kingTime.value + frame - kingStartFrame.value)
-		end
-		local maxKingTime = 0
-		local winningAllyTeams = Set.new()
-		for allyTeamId, kingTime in pairs(allyTeamKingTime) do
-			if kingTime.value > maxKingTime then
-				maxKingTime = kingTime.value
-				winningAllyTeams:clear()
-				winningAllyTeams:add(allyTeamId)
-			elseif kingTime.value == maxKingTime then
-				winningAllyTeams:add(allyTeamId)
-			end
-		end
-		Spring.GameOver(winningAllyTeams:unpack())
 	end
 	
 end
@@ -614,13 +623,11 @@ function gadget:UnitCreated(unitID, unitDefID, unitTeam, builderID)
 		Spring.SetUnitMaxHealth(unitID, oldMaxHealth * healthMultiplier)
 		Spring.SetUnitHealth(unitID, oldHealth * healthMultiplier)
 	end
-	if teamToAllyTeam[unitTeam] == kingAllyTeam.value then
-		local unitDef = UnitDefs[unitDefID]
-		if unitDef.isBuilding or unitDef.isStaticBuilder then
-			local unitX, _, unitZ = Spring.GetUnitPosition(unitID)
-			if hillArea:isPointInside(unitX, unitZ) then
-				hillBuildings:add(unitID)
-			end
+	local unitDef = UnitDefs[unitDefID]
+	if unitDef.isBuilding or unitDef.isStaticBuilder then
+		local unitX, _, unitZ = Spring.GetUnitPosition(unitID)
+		if hillArea:isPointInside(unitX, unitZ) then
+			hillBuildings:add(unitID)
 		end
 	end
 end
@@ -646,6 +653,8 @@ local function resetKingAndCapturing()
 	capturingAllyTeam:setAndSend(nil)
 	capturingCompleteFrame:setAndSend(0)
 	capturingCountingUp:setAndSend(false)
+	kingWinFrame = math.maxinteger
+	destroyHillBuildings()
 end
 
 --Called when a team dies. Used to disqualify allyTeams with no remaining alive teams.
@@ -654,10 +663,13 @@ function gadget:TeamDied(teamID)
 	local newLives = allyTeamLives[allyTeamId] - 1
 	allyTeamLives[allyTeamId] = newLives
 	if newLives <= 0 then
-		allyTeamKingTime[allyTeamId]:setAndSend(math.mininteger)--negative value indicates disqualified
+		local kingTime = allyTeamKingTime[allyTeamId]
 		if kingAllyTeam.value == allyTeamId then
+			--Add current time to king time before removing king
+			kingTime:set(kingTime.value + frame - kingStartFrame.value)
 			resetKingAndCapturing()
 		end
+		kingTime:setAndSend(-kingTime.value)--negative value indicates disqualified
 	end
 end
 

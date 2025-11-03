@@ -1343,15 +1343,15 @@ local options = {
     },
     
     {
-        key    	= "kingofthehillgameduration",
-        name   	= "Game Duration",
-        desc   	= "After this number of minutes, the team that occupied the hill for the most time wins",
+        key    	= "kingofthehillwinKingTime",
+        name   	= "Win After Time",
+        desc   	= "A team will win once they have spent this number of minutes as the king",
         type   	= "number",
         section = "options_experimental",
-        def  	= 30,
-        min    	= 1,
+        def  	= 10,
+        min    	= 0.01,
         max    	= 28000,
-        step   	= 1,
+        step   	= 0.01,
     },
     
     {
@@ -1370,21 +1370,9 @@ local options = {
         type   	= "number",
         section = "options_experimental",
         def  	= 20,
-        min    	= 1,
-        max    	= 500,
-        step   	= 1,
-    },
-    
-    {
-        key    	= "kingofthehillrespawntime",
-        name   	= "Respawn Time",
-        desc   	= "The time in seconds that a dead commander takes to respawn",
-        type   	= "number",
-        section = "options_experimental",
-        def  	= 30,
-        min    	= 0,
-        max    	= 5000,
-        step   	= 1,
+        min    	= 0.1,
+        max    	= 600,
+        step   	= 0.1,
     },
     
     {
@@ -1393,9 +1381,9 @@ local options = {
         desc   	= "Multiplier applied to default commander health",
         type   	= "number",
         section = "options_experimental",
-        def  	= 2.7,
+        def  	= 1,
         min    	= 0.01,
-        max    	= 5000,
+        max    	= 10000,
         step   	= 0.01,
     },
     
