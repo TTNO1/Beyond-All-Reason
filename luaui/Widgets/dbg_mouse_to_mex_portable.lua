@@ -1,3 +1,5 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Mouse to Mexes",
@@ -9,6 +11,10 @@ function widget:GetInfo()
 		enabled = false
 	}
 end
+
+
+-- Localized Spring API for performance
+local spEcho = Spring.Echo
 
 include("keysym.h.lua")
 
@@ -60,7 +66,7 @@ end
 
 function widget:Initialize()
 	if not Spring.IsCheatingEnabled() then
-		Spring.Echo("This widget requires cheats enabled")
+		spEcho("This widget requires cheats enabled")
 		widgetHandler:RemoveWidget()
 		return
 	end
@@ -77,6 +83,6 @@ function widget:Shutdown()
 	end
 	if handle ~= nil then
 		io.close(handle)
-		Spring.Echo("Writen Mex Spots To: " .. "MexSpots_" .. Game.mapName)
+		spEcho("Writen Mex Spots To: " .. "MexSpots_" .. Game.mapName)
 	end
 end

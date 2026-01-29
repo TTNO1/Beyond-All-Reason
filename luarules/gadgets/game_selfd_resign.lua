@@ -4,6 +4,8 @@ if Spring.Utilities.Gametype.IsSinglePlayer() then
 	return
 end
 
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
     return {
         name	= "Self-Destruct Resign",
@@ -48,6 +50,10 @@ if gadgetHandler:IsSyncedCode() then
 		end
 	end
 
+	function gadget:Initialize()
+		gadgetHandler:RegisterAllowCommand(CMD_SELFD)
+	end
+
 	function gadget:GameFrame(n)
 		if n % 15 == 1 then
 			for teamID, _ in pairs(selfdCheckTeamUnits) do
@@ -82,7 +88,7 @@ if gadgetHandler:IsSyncedCode() then
 							break
 						elseif selfdUnitCount >= triggerResignAmount then
 							local LuaAI = Spring.GetTeamLuaAI(teamID)
-							if not LuaAI or not ( string.find(LuaAI, "ScavReduxAI") or string.find(LuaAI, "Scavengers") or string.find(LuaAI, "Raptors") ) then
+							if not LuaAI or not ( string.find(LuaAI, "Scavengers") or string.find(LuaAI, "Raptors") ) then
 								forceResignTeam(teamID)
 							end
 							break
@@ -95,7 +101,7 @@ if gadgetHandler:IsSyncedCode() then
 	end
 
 	function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions, cmdTag, playerID, fromSynced, fromLua)
-		if cmdID == CMD_SELFD and teamID ~= gaiaTeamID then
+		if teamID ~= gaiaTeamID then
 			selfdCheckTeamUnits[teamID] = true
 		end
 		return true
@@ -110,11 +116,12 @@ else -- UNSYNCED
 
 	local function forceResignMessage(_, playerID)
 		if playerID == myPlayerID then
-			if not Spring.GetSpectatingState() then
-				-- check first if player has team players
-				local numActiveTeamPlayers = 0
-				local teamList = Spring.GetTeamList(select(6, Spring.GetTeamInfo(myTeamID,false)))
-				for _,tID in ipairs(teamList) do
+		if not Spring.GetSpectatingState() then
+			-- check first if player has team players
+			local numActiveTeamPlayers = 0
+			local allyID = select(6, Spring.GetTeamInfo(myTeamID, false))
+			local teamList = Spring.GetTeamList(allyID)
+			for _,tID in ipairs(teamList) do
 					local luaAI = Spring.GetTeamLuaAI(tID)
 					if tID ~= myTeamID and not select(4, Spring.GetTeamInfo(tID,false)) and (not luaAI or luaAI == "") and Spring.GetTeamRulesParam(tID, "numActivePlayers") > 0 then
 						numActiveTeamPlayers = numActiveTeamPlayers + 1

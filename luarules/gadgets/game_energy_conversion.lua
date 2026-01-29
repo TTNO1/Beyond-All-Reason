@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name = 'Energy Conversion',
@@ -11,16 +13,9 @@ function gadget:GetInfo()
 	}
 end
 
-----------------------------------------------------------------
--- Synced only
-----------------------------------------------------------------
 if not gadgetHandler:IsSyncedCode() then
 	return false
 end
-
-----------------------------------------------------------------
--- Config
-----------------------------------------------------------------
 
 -- gather all metalmaker units
 local convertCapacities = {}
@@ -34,7 +29,6 @@ local alterLevelRegex = '^' .. string.char(137) .. '(%d+)$'
 local mmLevelParamName = 'mmLevel'
 local mmCapacityParamName = 'mmCapacity'
 local mmUseParamName = 'mmUse'
-local mmAvgEfficiencyParamName = 'mmAvgEfficiency'
 local mmAvgEffiParamName = 'mmAvgEffi'
 local function SetMMRulesParams()
 	-- make convertCapacities accessible to all
@@ -54,40 +48,32 @@ local resourceUpdatesPerGameSec = frameRate / resourceRefreshRate
 
 local currentFrameStamp = 0
 
-----------------------------------------------------------------
--- Vars
-----------------------------------------------------------------
 local teamList = {}
 local teamCapacities = {}
-local teamUsages = {}
 local teamMMList = {}
 local teamEfficiencies = {}
 local eSteps = {}
 local teamActiveMM = {}
-local lastPost = {}
 local splitMMPointer = 1
-local splitMMUpdate = -1
-----------------------------------------------------------------
--- Constant
-----------------------------------------------------------------
 
 local paralysisRelRate = 75 -- unit HP / paralysisRelRate = paralysis dmg drop rate per slowupdate
 
 ----------------------------------------------------------------
 -- Speedups
 ----------------------------------------------------------------
+
 local spGetPlayerInfo = Spring.GetPlayerInfo
 local spGetTeamRulesParam = Spring.GetTeamRulesParam
 local spSetTeamRulesParam = Spring.SetTeamRulesParam
 local spGetTeamResources = Spring.GetTeamResources
-local spUseTeamResource = Spring.UseTeamResource
-local spAddTeamResource = Spring.AddTeamResource
 local spGetUnitHealth = Spring.GetUnitHealth
 local spGetUnitTeam = Spring.GetUnitTeam
 local spGetUnitDefID = Spring.GetUnitDefID
-local spAddUnitResource = Spring.AddUnitResource
-local spUseUnitResource = Spring.UseUnitResource
 local spSetUnitResourcing = Spring.SetUnitResourcing
+local spCallCOBScript = Spring.CallCOBScript
+local spGetTeamList = Spring.GetTeamList
+local mathCeil = math.ceil
+local tableSort = table.sort
 
 ----------------------------------------------------------------
 -- Functions
@@ -106,7 +92,8 @@ local function AdjustTeamCapacity(teamID, adjustment, e)
 	teamCapacities[teamID][e] = newCapacity
 
 	local totalCapacity = 0
-	for j = 1, #eSteps do
+	local eStepsCount = #eSteps
+	for j = 1, eStepsCount do
 		totalCapacity = totalCapacity + teamCapacities[teamID][eSteps[j]]
 	end
 	spSetTeamRulesParam(teamID, mmCapacityParamName, totalCapacity)
@@ -118,10 +105,17 @@ local function updateUnitConversion(unitID, amount, e)
 end
 
 local function UpdateMetalMakers(teamID, energyUse)
-	local totalTeamEnergyUse = 0
-
-	for j = 1, #eSteps do
-		for unitID, defs in pairs(teamMMList[teamID][eSteps[j]]) do
+	-- Only skip if there are no converters at all (nothing to turn on or off)
+	-- We need to process even when energyUse <= 0 to turn off active converters
+	if teamActiveMM[teamID] == 0 and energyUse <= 0 then
+		return
+	end
+	
+	local eStepsCount = #eSteps
+	for j = 1, eStepsCount do
+		local eStep = eSteps[j]
+		local teamMMUnits = teamMMList[teamID][eStep]
+		for unitID, defs in pairs(teamMMUnits) do
 			if defs.built then
 				if not defs.emped and energyUse > 0 then
 					local amount = (energyUse < defs.capacity and energyUse or defs.capacity)    -- alternative math.min method
@@ -129,20 +123,17 @@ local function UpdateMetalMakers(teamID, energyUse)
 						amount = 0
 					end
 					energyUse = (energyUse - defs.capacity)
-					updateUnitConversion(unitID, amount, eSteps[j])
+					updateUnitConversion(unitID, amount, eStep)
 
 					if defs.status == 0 then
-						Spring.CallCOBScript(unitID, "MMStatus", 0, 1)
+						spCallCOBScript(unitID, "MMStatus", 0, 1)
 						defs.status = 1
 						teamActiveMM[teamID] = (teamActiveMM[teamID] + 1)
 					end
 				else
-					if teamActiveMM[teamID] == 0 then
-						break
-					end
 					if defs.status == 1 then
 						updateUnitConversion(unitID, 0, 0)
-						Spring.CallCOBScript(unitID, "MMStatus", 0, 0)
+						spCallCOBScript(unitID, "MMStatus", 0, 0)
 						defs.status = 0
 						teamActiveMM[teamID] = (teamActiveMM[teamID] - 1)
 					end
@@ -180,14 +171,12 @@ end
 -- EmpedVector Methods
 ----------------------------------------------------------------
 local EmpedVector = { unitBuffer = {} }
---local tableInsert = table.insert
 
 function EmpedVector:push(uID, frameID)
 	if self.unitBuffer[uID] then
 		self.unitBuffer[uID] = frameID
 	else
 		self.unitBuffer[uID] = frameID
-		--tableInsert(self.unitBuffer, uID, frameID)
 		UnitParalysed(uID, spGetUnitDefID(uID), spGetUnitTeam(uID))
 	end
 end
@@ -196,7 +185,6 @@ function EmpedVector:process(currentFrame)
 	for uID, frameID in pairs(self.unitBuffer) do
 		if currentFrame >= frameID then
 			UnitParalysisOver(uID, spGetUnitDefID(uID), spGetUnitTeam(uID))
-
 			self.unitBuffer[uID] = nil
 		end
 	end
@@ -242,46 +230,43 @@ end
 function gadget:Initialize()
 	SetMMRulesParams()
 	BuildeSteps()
-	local i = 1
-	teamList = Spring.GetTeamList()
-	for i = 1, #teamList do
+	teamList = spGetTeamList()
+	local teamListCount = #teamList
+	local eStepsCount = #eSteps
+	for i = 1, teamListCount do
 		local tID = teamList[i]
 		teamCapacities[tID] = {}
 		teamEfficiencies[tID] = prototype(Efficiencies)
 		teamEfficiencies[tID]:init(tID)
 		teamMMList[tID] = {}
 		teamActiveMM[tID] = 0
-		lastPost[tID] = 0
-		for j = 1, #eSteps do
+		for j = 1, eStepsCount do
 			teamCapacities[tID][eSteps[j]] = 0
 			teamMMList[tID][eSteps[j]] = {}
 		end
-		teamUsages[tID] = 0
 		spSetTeamRulesParam(tID, mmLevelParamName, 0.75)
 		spSetTeamRulesParam(tID, mmCapacityParamName, 0)
 		spSetTeamRulesParam(tID, mmUseParamName, 0)
 		spSetTeamRulesParam(tID, mmAvgEffiParamName, teamEfficiencies[tID]:avg())
 
 	end
-
-	splitMMUpdate = math.floor(math.max((frameRate / #teamList), 1))
 end
 
 function BuildeSteps()
 	local i = 1
 	for defid, defs in pairs(convertCapacities) do
 		local inTable = false
-		for _, e in ipairs(eSteps) do
-			if (e == defs.e) then
+		for j = 1, #eSteps do
+			if eSteps[j] == defs.e then
 				inTable = true
 			end
 		end
-		if (inTable == false) then
+		if inTable == false then
 			eSteps[i] = defs.e
-			i = (i + 1)
+			i = i + 1
 		end
 	end
-	table.sort(eSteps, function(m1, m2)
+	tableSort(eSteps, function(m1, m2)
 		return m1 > m2;
 	end)
 end
@@ -298,25 +283,31 @@ function gadget:GameFrame(n)
 	-- in case of more than 15 teams ingame, two or more teams are processed in one gameframe
 
 	if n % resourceRefreshRate == (splitMMPointer - 1) then
-		for i = 0, math.ceil(#teamList / resourceRefreshRate) - 1 do
+		local teamListCount = #teamList
+		local ceilTeams = mathCeil(teamListCount / resourceRefreshRate)
+		local eStepsCount = #eSteps
+		for i = 0, ceilTeams - 1 do
 			local tID
 			local tpos = (splitMMPointer + (i * resourceRefreshRate))
-			if tpos < #teamList then
+			if tpos <= teamListCount then
 				tID = teamList[tpos]
 
 				local eCur, eStor = spGetTeamResources(tID, 'energy')
-				local convertAmount = eCur - eStor * spGetTeamRulesParam(tID, mmLevelParamName)
-				local eConvert, mConvert, eConverted, mConverted, teamUsages = 0, 0, 0, 0, 0
+				local mmLevel = spGetTeamRulesParam(tID, mmLevelParamName)
+				local convertAmount = eCur - eStor * mmLevel
+				local _, _, eConverted, mConverted, teamUsages = 0, 0, 0, 0, 0
 
-				for j = 1, #eSteps do
-					if teamCapacities[tID][eSteps[j]] > 1 then
+				for j = 1, eStepsCount do
+					local eStep = eSteps[j]
+					local teamCapacity = teamCapacities[tID][eStep]
+					if teamCapacity > 1 then
 						if convertAmount > 1 then
-							local convertStep = teamCapacities[tID][eSteps[j]] * resourceFraction
+							local convertStep = teamCapacity * resourceFraction
 							if convertStep > convertAmount then
 								convertStep = convertAmount
 							end
 							eConverted = convertStep + eConverted
-							mConverted = convertStep * eSteps[j] + mConverted
+							mConverted = convertStep * eStep + mConverted
 							teamUsages = teamUsages + convertStep
 							convertAmount = convertAmount - convertStep
 						else
@@ -347,19 +338,25 @@ function gadget:UnitCreated(uID, uDefID, uTeam, builderID)
 end
 
 function gadget:UnitFinished(uID, uDefID, uTeam)
-	if convertCapacities[uDefID] then
-		local cDefs = convertCapacities[uDefID]
-		if not teamMMList[uTeam][cDefs.e][uID] then
-			teamMMList[uTeam][cDefs.e][uID] = { capacity = 0, status = 0, built = false, emped = false }
-		end
-		teamMMList[uTeam][cDefs.e][uID].capacity = cDefs.c
-		teamMMList[uTeam][cDefs.e][uID].built = true
-		if not teamMMList[uTeam][cDefs.e][uID].emped then
-			teamMMList[uTeam][cDefs.e][uID].status = 1
-			teamActiveMM[uTeam] = teamActiveMM[uTeam] + 1
-			Spring.CallCOBScript(uID, "MMStatus", 0, 1)
-			AdjustTeamCapacity(uTeam, cDefs.c, cDefs.e)
-		end
+	local cDefs = convertCapacities[uDefID]
+	if not cDefs then
+		return
+	end
+	
+	local teamMM = teamMMList[uTeam][cDefs.e]
+	if not teamMM[uID] then
+		teamMM[uID] = { capacity = 0, status = 0, built = false, emped = false }
+	end
+	
+	local unitData = teamMM[uID]
+	unitData.capacity = cDefs.c
+	unitData.built = true
+	
+	if not unitData.emped then
+		unitData.status = 1
+		teamActiveMM[uTeam] = teamActiveMM[uTeam] + 1
+		spCallCOBScript(uID, "MMStatus", 0, 1)
+		AdjustTeamCapacity(uTeam, cDefs.c, cDefs.e)
 	end
 end
 
@@ -368,54 +365,66 @@ function gadget:UnitDamaged(uID, uDefID, uTeam, damage, paralyzer)
 		local _, maxHealth, paralyzeDamage, _, _ = spGetUnitHealth(uID)
 		local relativeParDmg = paralyzeDamage - maxHealth
 		if relativeParDmg > 0 then
-			EmpedVector:push(uID, currentFrameStamp + math.ceil(relativeParDmg / (maxHealth / paralysisRelRate)))
+			EmpedVector:push(uID, currentFrameStamp + mathCeil(relativeParDmg / (maxHealth / paralysisRelRate)))
 		end
 	end
 end
 
 function gadget:UnitDestroyed(uID, uDefID, uTeam)
-	if convertCapacities[uDefID] then
-		local cDefs = convertCapacities[uDefID]
-		if teamMMList[uTeam][cDefs.e][uID] then
-			if teamMMList[uTeam][cDefs.e][uID].built then
-				if teamMMList[uTeam][cDefs.e][uID].status == 1 then
-					teamActiveMM[uTeam] = teamActiveMM[uTeam] - 1
-				end
+	local cDefs = convertCapacities[uDefID]
+	if not cDefs then
+		return
+	end
+	
+	local teamMM = teamMMList[uTeam][cDefs.e]
+	local unitData = teamMM[uID]
+	if not unitData then
+		return
+	end
+	
+	if unitData.built then
+		if unitData.status == 1 then
+			teamActiveMM[uTeam] = teamActiveMM[uTeam] - 1
+		end
 
-				if not teamMMList[uTeam][cDefs.e][uID].emped then
-					AdjustTeamCapacity(uTeam, -cDefs.c, cDefs.e)
-				end
-			end
-			teamMMList[uTeam][cDefs.e][uID] = nil
+		if not unitData.emped then
+			AdjustTeamCapacity(uTeam, -cDefs.c, cDefs.e)
 		end
 	end
+	teamMM[uID] = nil
 end
 
 function gadget:UnitGiven(uID, uDefID, newTeam, oldTeam)
-	if convertCapacities[uDefID] then
-		local cDefs = convertCapacities[uDefID]
-		if teamMMList[oldTeam][cDefs.e][uID] then
-			if teamMMList[oldTeam][cDefs.e][uID].built then
-
-				if not teamMMList[oldTeam][cDefs.e][uID].emped then
-					AdjustTeamCapacity(oldTeam, -cDefs.c, cDefs.e)
-					AdjustTeamCapacity(newTeam, cDefs.c, cDefs.e)
-				end
-				if teamMMList[oldTeam][cDefs.e][uID].status == 1 then
-					teamActiveMM[oldTeam] = teamActiveMM[oldTeam] - 1
-					teamActiveMM[newTeam] = teamActiveMM[newTeam] + 1
-				end
-			end
-
-			teamMMList[newTeam][cDefs.e][uID] = {}
-			teamMMList[newTeam][cDefs.e][uID].capacity = teamMMList[oldTeam][cDefs.e][uID].capacity
-			teamMMList[newTeam][cDefs.e][uID].status = teamMMList[oldTeam][cDefs.e][uID].status
-			teamMMList[newTeam][cDefs.e][uID].emped = teamMMList[oldTeam][cDefs.e][uID].emped
-			teamMMList[newTeam][cDefs.e][uID].built = teamMMList[oldTeam][cDefs.e][uID].built
-
-			teamMMList[oldTeam][cDefs.e][uID] = nil
+	local cDefs = convertCapacities[uDefID]
+	if not cDefs then
+		return
+	end
+	
+	local oldTeamMM = teamMMList[oldTeam][cDefs.e]
+	local oldUnitData = oldTeamMM[uID]
+	if not oldUnitData then
+		return
+	end
+	
+	if oldUnitData.built then
+		if not oldUnitData.emped then
+			AdjustTeamCapacity(oldTeam, -cDefs.c, cDefs.e)
+			AdjustTeamCapacity(newTeam, cDefs.c, cDefs.e)
+		end
+		if oldUnitData.status == 1 then
+			teamActiveMM[oldTeam] = teamActiveMM[oldTeam] - 1
+			teamActiveMM[newTeam] = teamActiveMM[newTeam] + 1
 		end
 	end
+
+	teamMMList[newTeam][cDefs.e][uID] = {
+		capacity = oldUnitData.capacity,
+		status = oldUnitData.status,
+		emped = oldUnitData.emped,
+		built = oldUnitData.built
+	}
+
+	oldTeamMM[uID] = nil
 end
 
 function gadget:RecvLuaMsg(msg, playerID)

@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name = "Pre-aim",
@@ -14,57 +16,42 @@ if not gadgetHandler:IsSyncedCode() then
 	return
 end
 
-local weaponRange = {}
-local isPreaimUnit = {}
+local spSetUnitWeaponState = Spring.SetUnitWeaponState
+
+--use weaponDef.customparams.exclude_preaim = true to exclude units from being able to pre-aim at targets almost within firing range.
+--this is a good idea for pop-up turrets so they don't prematurely reveal themselves.
+--also when proximityPriority is heavily biased toward far targets
+
+local autoTargetRangeBoost = {}
+
 for unitDefID, unitDef in pairs(UnitDefs) do
 	if not unitDef.canFly then
+		local weaponBoost = {}
+
 		local weapons = unitDef.weapons
-		if #weapons > 0 then
-			for i=1, #weapons do
-				if not isPreaimUnit[unitDefID] then
-					isPreaimUnit[unitDefID] = {}
-				end
-				local weaponDefID = weapons[i].weaponDef
-				isPreaimUnit[unitDefID][i] = weaponDefID
-				weaponRange[weaponDefID] = WeaponDefs[weaponDefID].range
+		for i = 1, #weapons do
+			local weaponDefID = weapons[i].weaponDef
+			local weaponDef = WeaponDefs[weaponDefID]
+
+			if not weaponDef.customParams.exclude_preaim then
+				local range = weaponDef.range
+				local param = tonumber(weaponDef.customParams.preaim_range)
+				local boost = math.max(20, range * 0.10, (param or 0) - range)
+				weaponBoost[i] = boost
 			end
 		end
-	end
-end
 
-local exludedUnitsNames = {    -- exclude auto target range boost for popup units
-	['armclaw'] = true,
-	['armpb'] = true,
-	['armamb'] = true,
-	['cormaw'] = true,
-	['corvipe'] = true,
-	['corpun'] = true,
-	['corexp'] = true,
-	['corllt'] = true,
-	['corhllt'] = true,
-	['armllt'] = true,
-	['leginc'] = true,
-}
--- convert unitname -> unitDefID + add scavengers
-local exludedUnits = {}
-for name, params in pairs(exludedUnitsNames) do
-	if UnitDefNames[name] then
-		exludedUnits[UnitDefNames[name].id] = params
-		if UnitDefNames[name..'_scav'] then
-			exludedUnits[UnitDefNames[name..'_scav'].id] = params
+		if next(weaponBoost) then
+			autoTargetRangeBoost[unitDefID] = weaponBoost
 		end
 	end
-end
-exludedUnitsNames = nil
-
-for k, v in pairs(exludedUnits) do
-	isPreaimUnit[k] = nil
 end
 
 function gadget:UnitCreated(unitID, unitDefID)
-	if isPreaimUnit[unitDefID] then
-		for id, wdefID in pairs(isPreaimUnit[unitDefID]) do
-			Spring.SetUnitWeaponState(unitID, id, "autoTargetRangeBoost", (0.1 * weaponRange[wdefID]) or 20)
+	local unitData = autoTargetRangeBoost[unitDefID]
+	if unitData then
+		for weaponNum, rangeBoost in pairs(unitData) do
+			spSetUnitWeaponState(unitID, weaponNum, "autoTargetRangeBoost", rangeBoost)
 		end
 	end
 end

@@ -1,3 +1,5 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Norush Timer GL4",
@@ -10,29 +12,13 @@ function widget:GetInfo()
 	}
 end
 
--- Spring.Echo(Spring.GetTeamInfo(Spring.GetMyTeamID()))
 
-local scavengerAITeamID = 999
-local raptorsAITeamID = 999
-local scavengerAIAllyTeamID = 999
-local raptorsAIAllyTeamID = 999
-local teams = Spring.GetTeamList()
-for i = 1, #teams do
-	local luaAI = Spring.GetTeamLuaAI(teams[i])
-	if luaAI and luaAI ~= "" and string.sub(luaAI, 1, 12) == 'ScavengersAI' then
-		scavengerAITeamID = i - 1
-		scavengerAIAllyTeamID = select(6, Spring.GetTeamInfo(scavengerAITeamID))
-		break
-	end
-end
-for i = 1, #teams do
-	local luaAI = Spring.GetTeamLuaAI(teams[i])
-	if luaAI and luaAI ~= "" and string.sub(luaAI, 1, 12) == 'RaptorsAI' then
-		raptorsAITeamID = i - 1
-		raptorsAIAllyTeamID = select(6, Spring.GetTeamInfo(raptorsAITeamID))
-		break
-	end
-end
+-- Localized Spring API for performance
+local spEcho = Spring.Echo
+
+-- spEcho(Spring.GetTeamInfo(Spring.GetMyTeamID()))
+
+local pveAllyTeamID = Spring.Utilities.GetScavAllyTeamID() or Spring.Utilities.GetRaptorAllyTeamID()
 
 ---- Config stuff ------------------
 local autoReload = false -- refresh shader code every second (disable in production!)
@@ -41,15 +27,14 @@ local StartBoxes = {} -- list of xXyY
 local noRushTime = Spring.GetModOptions().norushtimer*60*30
 if noRushTime == 0 then return end
 
-local luaShaderDir = "LuaUI/Widgets/Include/"
-local LuaShader = VFS.Include(luaShaderDir.."LuaShader.lua")
-VFS.Include(luaShaderDir.."instancevbotable.lua")
+local LuaShader = gl.LuaShader
+local InstanceVBOTable = gl.InstanceVBOTable
 
 local minY, maxY = Spring.GetGroundExtremes()
 
 local shaderSourceCache = {
-		vssrcpath = "LuaUI/Widgets/Shaders/norush_timer.vert.glsl",
-		fssrcpath = "LuaUI/Widgets/Shaders/norush_timer.frag.glsl",
+		vssrcpath = "LuaUI/Shaders/norush_timer.vert.glsl",
+		fssrcpath = "LuaUI/Shaders/norush_timer.frag.glsl",
 		uniformInt = {
 			mapDepths = 0,
 			noRushTimer = Spring.GetModOptions().norushtimer*60*30,
@@ -74,7 +59,7 @@ local glDepthTest = gl.DepthTest
 local spIsGUIHidden			= Spring.IsGUIHidden
 
 function widget:RecvLuaMsg(msg, playerID)
-	--Spring.Echo("widget:RecvLuaMsg",msg)
+	--spEcho("widget:RecvLuaMsg",msg)
 	if msg:sub(1,18) == 'LobbyOverlayActive' then
 		chobbyInterface = (msg:sub(1,19) == 'LobbyOverlayActive1')
 	end
@@ -88,7 +73,7 @@ function widget:DrawWorldPreUnit()
 
 	if chobbyInterface or spIsGUIHidden() then return end
 
-	local advUnitShading, advMapShading = Spring.HaveAdvShading()
+	local _, advMapShading = Spring.HaveAdvShading()
 
 	if advMapShading then 
 		gl.Texture(0, "$map_gbuffer_zvaltex")
@@ -100,13 +85,13 @@ function widget:DrawWorldPreUnit()
 		end
 	end
 	
-	glCulling(GL.FRONT)
+	glCulling(true)
 	glDepthTest(false)
 	gl.DepthMask(false)
 
 	norushTimerShader:Activate()
 	for i, startBox in ipairs(StartBoxes) do
-		--Spring.Echo("startBoxes["..i.."]", startBox[1],startBox[2],startBox[3],startBox[4])
+		--spEcho("startBoxes["..i.."]", startBox[1],startBox[2],startBox[3],startBox[4])
 		norushTimerShader:SetUniform("startBoxes["..( i-1) .."]", startBox[1],startBox[2],startBox[3],startBox[4])
 	end
 	norushTimerShader:SetUniform("noRushTimer", noRushTime)
@@ -127,9 +112,9 @@ function widget:Initialize()
 		gaiaAllyTeamID = select(6, Spring.GetTeamInfo(Spring.GetGaiaTeamID() , false))
 	end
 	for i, teamID in ipairs(Spring.GetAllyTeamList()) do
-		if teamID ~= gaiaAllyTeamID and teamID ~= scavengerAIAllyTeamID and teamID ~= raptorsAIAllyTeamID then
+		if teamID ~= gaiaAllyTeamID and teamID ~= pveAllyTeamID then
 			local xn, zn, xp, zp = Spring.GetAllyTeamStartBox(teamID)
-			--Spring.Echo("Allyteam",teamID,"startbox",xn, zn, xp, zp)	
+			--spEcho("Allyteam",teamID,"startbox",xn, zn, xp, zp)	
 			StartBoxes[#StartBoxes+1] = {xn, zn, xp, zp}
 		end
 	end
@@ -142,9 +127,9 @@ function widget:Initialize()
 	norushTimerShader = LuaShader.CheckShaderUpdates(shaderSourceCache) or norushTimerShader
 
 	if not norushTimerShader then
-		Spring.Echo("Error: Norush Timer GL4 shader not initialized")
+		spEcho("Error: Norush Timer GL4 shader not initialized")
 		widgetHandler:RemoveWidget()
 		return
 	end
-	fullScreenRectVAO = MakeTexRectVAO()
+	fullScreenRectVAO = InstanceVBOTable.MakeTexRectVAO()
 end

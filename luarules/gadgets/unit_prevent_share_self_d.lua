@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name      = "No Share Self-D",
@@ -51,7 +53,7 @@ function gadget:Initialize()
 	local players = Spring.GetPlayerList()
 	for _, playerID in pairs(players) do
 		local _,active,spec,teamID = spGetPlayerInfo(playerID,false)
-		local leaderPlayerID, isDead, isAiTeam = Spring.GetTeamInfo(teamID)
+		local leaderPlayerID, isDead, isAiTeam = Spring.GetTeamInfo(teamID, false)
 		if isDead == 0 and not isAiTeam then
 			--_, active, spec = spGetPlayerInfo(leaderPlayerID, false)
 			if active and not spec then

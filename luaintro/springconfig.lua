@@ -4,6 +4,11 @@
 
 Spring.SetConfigString("SplashScreenDir", "./MenuLoadscreens")
 
+-- ghost icons dimming, override engine default but allow user setting
+if Spring.GetConfigFloat("UnitGhostIconsDimming", 0.5) == 0.5 then
+	Spring.SetConfigFloat("UnitGhostIconsDimming", 0.75)
+end
+
 -- set default unit rendering vars
 Spring.SetConfigFloat("tonemapA", 4.75)
 Spring.SetConfigFloat("tonemapB", 0.75)
@@ -32,15 +37,8 @@ Spring.SetConfigInt("CubeTexSizeReflection", 1024)
 -- disable grass
 Spring.SetConfigInt("GrassDetail", 0)
 
--- adv unit shading
-if not tonumber(Spring.GetConfigInt("AdvUnitShading",0) or 0) then
-	Spring.SetConfigInt("AdvUnitShading", 1)
-end
-
 -- adv map shading
---if not tonumber(Spring.GetConfigInt("AdvMapShading",0) or 0) then
---	Spring.SetConfigInt("AdvMapShading", 1)
---end
+Spring.SetConfigInt("AdvMapShading", 1)
 
 -- make sure default/minimum ui opacity is set
 if Spring.GetConfigFloat("ui_opacity", 0.6) < 0.3 then
@@ -70,6 +68,9 @@ Spring.SetConfigInt("MaxDynamicModelLights", 0)
 -- Enable deferred map/model rendering
 Spring.SetConfigInt("AllowDeferredMapRendering", 1)
 Spring.SetConfigInt("AllowDeferredModelRendering", 1)
+
+-- Enables the DrawGroundDeferred event, which is needed for deferred map edge rendering
+Spring.SetConfigInt("AllowDrawMapDeferredEvents", 1)
 
 -- Disable LoadingMT because: crashes on load, but fixed in 105.1.1-1422, redisable in 105.1.1-1432
 --Spring.SetConfigInt("LoadingMT", 0)
@@ -109,10 +110,6 @@ Spring.SetConfigInt("BumpWaterTexSizeReflection", 1024)
 
 Spring.SetConfigFloat("CrossAlpha", 0)	-- will be in effect next launch
 
-if Spring.GetConfigInt("AdvModelShading", 0) ~= 1 then
-	Spring.SetConfigInt("AdvModelShading", 1)
-end
-
 if not Spring.GetConfigFloat("UnitIconFadeAmount") then
 	Spring.SetConfigFloat("UnitIconFadeAmount", 0.1)
 end
@@ -150,6 +147,40 @@ if Spring.GetConfigInt("version", 0) < version then
 		Spring.SetConfigFloat("ui_scale", 0.94)
 	end
 end
+version = 5
+if Spring.GetConfigInt("version", 0) < version then
+	Spring.SetConfigInt("version", version)
+
+	Spring.SetConfigInt("CamSpringMinZoomDistance", 300)
+	Spring.SetConfigInt("OverheadMinZoomDistance", 300)
+end
+version = 7
+if Spring.GetConfigInt("version", 0) < version then
+	Spring.SetConfigInt("version", version)
+
+	Spring.SetConfigInt("ui_rendertotexture", 1)
+end
+version = 8
+if Spring.GetConfigInt("version", 0) < version then
+	Spring.SetConfigInt("version", version)
+
+	local voiceset = Spring.GetConfigString("voiceset", '')
+	if voiceset == 'en/allison' then
+		Spring.SetConfigString("voiceset", 'en/cephis')
+	end
+end
+
+
+-- apply the old pre-engine implementation stored camera minimum zoom level
+local oldMinCamHeight = Spring.GetConfigInt("MinimumCameraHeight", -1)
+if oldMinCamHeight ~= -1 then
+	Spring.SetConfigInt("MinimumCameraHeight", -1)
+	Spring.SetConfigInt("CamSpringMinZoomDistance", oldMinCamHeight)
+	Spring.SetConfigInt("OverheadMinZoomDistance", oldMinCamHeight)
+end
+
+-- in case we forget to save it once again
+Spring.SetConfigInt("version", version)
 
 Spring.SetConfigInt("VSync", Spring.GetConfigInt("VSyncGame", -1))
 
@@ -173,6 +204,7 @@ else
 	Spring.SetConfigInt("KeyChainTimeout", userKeyChainTimeout)
 end
 
+
 -- The default mouse drag threshold is set extremely low for engine by default, and fast clicking often results in a drag.
 -- This is bad for single unit commands, which turn into empty area commmands as a result of the small drag
 local xresolution = math.max(Spring.GetConfigInt("XResolution", 1920), Spring.GetConfigInt("XResolutionWindowed", 1920))
@@ -180,14 +212,17 @@ local yresolution = math.max(Spring.GetConfigInt("YResolution", 1080), Spring.Ge
 
 local baseDragThreshold = 16
 baseDragThreshold = math.round(baseDragThreshold * (xresolution + yresolution) * ( 1/3000) ) -- is 16 at 1080p
-baseDragThreshold = math.max(8, math.min(40, baseDragThreshold)) -- clamp between 8 and 40
+baseDragThreshold = math.clamp(baseDragThreshold, 8, 40)
 Spring.Echo(string.format("Setting Mouse Drag thresholds based on resolution (%dx%d) for Selection to %d, and Command to %d", xresolution,yresolution,baseDragThreshold, baseDragThreshold + 16))
 Spring.SetConfigInt("MouseDragSelectionThreshold", baseDragThreshold)
 Spring.SetConfigInt("MouseDragCircleCommandThreshold", baseDragThreshold + 16)
 Spring.SetConfigInt("MouseDragBoxCommandThreshold", baseDragThreshold + 16)
 Spring.SetConfigInt("MouseDragFrontCommandThreshold", baseDragThreshold + 16)
 
--- These config ints control some multithreading functionality, and are now set to their enabled state for performance
-Spring.SetConfigInt("AnimationMT", 1)
-Spring.SetConfigInt("UpdateBoundingVolumeMT", 1)
-Spring.SetConfigInt("UpdateWeaponVectorsMT", 1)
+Spring.SetConfigInt("MaxFontTries", 5)
+Spring.SetConfigInt("UseFontConfigLib", 1)
+
+--local language = Spring.GetConfigString("language", 'en')
+--if language ~= 'en' and language ~= 'fr' then
+--	Spring.SetConfigString("language", 'en')
+--end

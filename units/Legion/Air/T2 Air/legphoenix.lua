@@ -6,14 +6,10 @@ return {
 		energycost = 25000,
 		metalcost = 450,
 		buildpic = "LEGPHOENIX.DDS",
-		buildtime = 40000,
+		buildtime = 46600,
 		canfly = true,
 		canattack = true,
 		canmove = true,
-		category = "ALL NOTLAND MOBILE WEAPON VTOL NOTSUB NOTSHIP NOTHOVER",
-		collisionvolumeoffsets = "0 0 5",
-		collisionvolumescales = "110 20 60",--yes this is unconventional but needs to be this way (passes the Drivver Test)
-		collisionvolumetype = "Box",
 		collide = false,
 		cruisealtitude = 220,
 		explodeas = "largeexplosiongeneric",
@@ -37,7 +33,7 @@ return {
 		script = "Units/legphoenix.cob",
 		seismicsignature = 0,
 		selfdestructas = "largeExplosionGenericSelfd",
-		sightdistance = 300,
+		sightdistance = 430,
 		speedtofront = 0.063,
 		turnradius = 64,
 		turnrate = 400,
@@ -46,18 +42,15 @@ return {
 		wingdrag = 0.125,
 		customparams = {
 			unitgroup = 'weapon',
-			model_author = "Hornet",
-			normaltex = "unittextures/cor_normal.dds",
-			subfolder = "legionaircraft/t2",
+			model_author = "Protar/Hornet",
+			normaltex = "unittextures/leg_normal.dds",
+			subfolder = "Legionaircraft/T2",
 			techlevel = 2,
 		},
 		featuredefs = {
 			dead = {
 				blocking = true,
 				category = "corpses",
-				collisionvolumeoffsets = "0 0 0",
-				collisionvolumescales = "110 10 45",
-				collisionvolumetype = "Box",
 				damage = 1200,
 				featuredead = "HEAP",
 				footprintx = 4,
@@ -70,8 +63,6 @@ return {
 			heap = {
 				blocking = false,
 				category = "heaps",
-				collisionvolumescales = "55.0 4.0 6.0",
-				collisionvolumetype = "cylY",
 				damage = 600,
 				footprintx = 3,
 				footprintz = 3,
@@ -127,15 +118,15 @@ return {
 				beamttl = 0.099,
 				camerashake = 0.1,
 				corethickness = 0.4,
+				collidefriendly = false,
 				craterareaofeffect = 120,
 				craterboost = 0,
 				cratermult = 0,
 				edgeeffectiveness = 0.45,
 				energypershot = 17,
-				explosiongenerator = "custom:genericshellexplosion-medium-beam",
+				explosiongenerator = "custom:heatray-huge",
 				firestarter = 90,
 				firetolerance = 300,
-				impulseboost = 0,
 				impulsefactor = 0,
 				laserflaresize = 6,
 				name = "Heavy a2g Phoenix Flame Heat Ray",
@@ -151,7 +142,6 @@ return {
 				soundstart = "",
 				soundstartvolume = 0,
 				soundtrigger = 0,
-				targetmoveerror = 0.1,
 				thickness = 4.5,
 				turret = true,
 				weapontype = "BeamLaser",
@@ -161,6 +151,9 @@ return {
 					default = 145,
 					vtol = 5,
 				},
+				customparams = {
+					sweepfire=7, --multiplier for displayed dps during the 'bonus' sweepfire stage, needed for DPS calcs
+				}
 			},
 			legphtarg = {--targetting only
 				areaofeffect = 121,
@@ -175,7 +168,6 @@ return {
 				edgeeffectiveness = -0.99,
 				explosiongenerator = "custom:noexplosion",
 				gravityaffected = "true",
-				impulseboost = 0,
 				impulsefactor = 0,
 				model = "empty.s3o",
 				mygravity = 0.4,
@@ -190,6 +182,8 @@ return {
 				},
 				customparams = {
 					bogus = 1,
+					nodecal = 1,
+					water_splash = 0, -- targetting weapon aircraftbomb
 				},
 			},
 			legphsound = {
@@ -208,6 +202,7 @@ return {
 				},
 				customparams = {
 					bogus = 1,
+					nodecal = 1,
 				},
 			},
 		},

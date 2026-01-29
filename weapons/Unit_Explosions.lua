@@ -1,13 +1,10 @@
-local impulseboost = 0.123
 local impulsefactor = 0.123
 
 local unitDeaths = {
 
 	blank = {
-		weaponType = "Cannon",
 		areaofeffect = 0,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		explosiongenerator = "custom:blank",
 		damage = {
@@ -22,7 +19,6 @@ local unitDeaths = {
 		cratermult = 0,
 		edgeeffectiveness = 0.75,
 		explosiongenerator = "custom:genericshellexplosion-huge-lightning",
-		impulseboost = 0,
 		impulsefactor = 0,
 		name = "EMPboom",
 		paralyzer = 1,
@@ -38,10 +34,8 @@ local unitDeaths = {
 	},
 
 	pyro = {
-		weaponType = "Cannon",
 		areaofeffect = 64,
 		camerashake = 64,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -54,11 +48,9 @@ local unitDeaths = {
 		}
 	},
 	pyroselfd = {
-		weaponType = "Cannon",
 		areaofeffect = 200,
 		camerashake = 200,
 		edgeeffectiveness = 0.5,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -72,10 +64,8 @@ local unitDeaths = {
 	},
 
 	flamethrower = {
-		weaponType = "Cannon",
 		areaofeffect = 48,
 		camerashake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -88,11 +78,9 @@ local unitDeaths = {
 		}
 	},
 	flamethrowerSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 140,
 		camerashake = 140,
 		edgeeffectiveness = 0.5,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -110,7 +98,6 @@ local unitDeaths = {
 		craterboost = 0,
 		cratermult = 0,
 		explosiongenerator = "custom:genericbuildingexplosion-medium",
-		impulseboost = 0.12300000339746,
 		impulsefactor = 0.12300000339746,
 		name = "TidalDeath",
 		soundhit = "xplosml3",
@@ -128,7 +115,6 @@ local unitDeaths = {
 		craterboost = 0,
 		cratermult = 0,
 		explosiongenerator = "custom:genericbuildingexplosion-medium",
-		impulseboost = 0.12300000339746,
 		impulsefactor = 0.12300000339746,
 		name = "TidalDeath",
 		soundhit = "xplosml3",
@@ -142,11 +128,9 @@ local unitDeaths = {
 	},
 
 	nanoboom = {
-		weaponType = "Cannon",
 		areaofeffect = 128,
 		camerashake = 128,
 		edgeeffectiveness = 0.75,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -161,11 +145,9 @@ local unitDeaths = {
 	},
 
 	nanoselfd = {
-		weaponType = "Cannon",
 		areaofeffect = 64,
 		camerashake = 64,
 		edgeeffectiveness = 0.75,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -180,10 +162,8 @@ local unitDeaths = {
 	},
 
 	smallbuilder = {
-		weaponType = "Cannon",
 		areaofeffect = 64,
 		camerashake = 64,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -196,10 +176,8 @@ local unitDeaths = {
 		}
 	},
 	smallbuilderSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 120,
 		camerashake = 120,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -213,11 +191,9 @@ local unitDeaths = {
 	},
 
 	windboom = {
-		weaponType = "Cannon",
 		AreaOfEffect = 180,
 		cameraShake = 180,
 		edgeeffectiveness = 0.75,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -231,10 +207,8 @@ local unitDeaths = {
 	},
 
 	metalmaker = {
-		weaponType = "Cannon",
 		areaofeffect = 210,
 		camerashake = 210,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -247,10 +221,8 @@ local unitDeaths = {
 		}
 	},
 	metalmakerSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 260,
 		camerashake = 260,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -264,10 +236,8 @@ local unitDeaths = {
 	},
 
 	advmetalmaker = {
-		weaponType = "Cannon",
 		areaofeffect = 320,
 		camerashake = 320,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -281,10 +251,8 @@ local unitDeaths = {
 		}
 	},
 	advmetalmakerSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 480,
 		camerashake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -299,10 +267,8 @@ local unitDeaths = {
 	},
 
 	energystorage = {
-		weaponType = "Cannon",
 		areaofeffect = 420,
 		camerashake = 420,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -315,10 +281,8 @@ local unitDeaths = {
 		}
 	},
 	energystorageSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 520,
 		camerashake = 520,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -331,10 +295,8 @@ local unitDeaths = {
 		}
 	},
 	['energystorage-uw'] = {
-		weaponType = "Cannon",
 		areaofeffect = 420,
 		camerashake = 420,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -347,10 +309,8 @@ local unitDeaths = {
 		}
 	},
 	['energystorageSelfd-uw'] = {
-		weaponType = "Cannon",
 		areaofeffect = 520,
 		camerashake = 520,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -364,10 +324,8 @@ local unitDeaths = {
 	},
 
 	advenergystorage = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -381,10 +339,8 @@ local unitDeaths = {
 		}
 	},
 	advenergystorageSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 768,
 		cameraShake = 768,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -398,10 +354,8 @@ local unitDeaths = {
 		}
 	},
 	['advenergystorage-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -415,10 +369,8 @@ local unitDeaths = {
 		}
 	},
 	['advenergystorageSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 768,
 		cameraShake = 768,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -433,10 +385,8 @@ local unitDeaths = {
 	},
 
 	geo = {
-		weaponType = "Cannon",
 		areaofeffect = 520,
 		camerashake = 210,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -450,10 +400,8 @@ local unitDeaths = {
 	},
 
 	advgeo = {
-		weaponType = "Cannon",
 		AreaOfEffect = 1280,
 		cameraShake = 1280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -468,10 +416,8 @@ local unitDeaths = {
 	},
 
 	nukeBuilding = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -485,10 +431,8 @@ local unitDeaths = {
 		}
 	},
 	nukeBuildingSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 1280,
 		cameraShake = 1280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -502,10 +446,8 @@ local unitDeaths = {
 		}
 	},
 	nukeSub = {
-		weaponType = "Cannon",
 		AreaOfEffect = 780,
 		cameraShake = 780,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -520,10 +462,8 @@ local unitDeaths = {
 	},
 
 	penetrator = {
-		weaponType = "Cannon",
 		areaofeffect = 420,
 		camerashake = 420,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -536,10 +476,8 @@ local unitDeaths = {
 		}
 	},
 	penetratorSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 520,
 		camerashake = 520,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -552,11 +490,24 @@ local unitDeaths = {
 		}
 	},
 
+	deadeyeSelfd = {
+		areaofeffect = 520,
+		camerashake = 520,
+		impulsefactor = impulsefactor,
+		soundhit = "xplolrg2",
+		soundstart = "largegun",
+		explosiongenerator = "custom:genericbuildingexplosion-huge",
+		damage = {
+			default = 540,
+		},
+		customparams = {
+			unitexplosion = 1,
+		}
+	},
+
 	bantha = {
-		weaponType = "Cannon",
 		areaofeffect = 500,
 		camerashake = 500,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -570,10 +521,8 @@ local unitDeaths = {
 		}
 	},
 	banthaSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 800,
 		camerashake = 800,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed4",
 		soundstart = "misicbm1",
@@ -587,10 +536,8 @@ local unitDeaths = {
 		}
 	},
 	korgExplosion = {
-		weaponType = "Cannon",
 		AreaOfEffect = 1280,
 		cameraShake = 1280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -604,10 +551,8 @@ local unitDeaths = {
 		}
 	},
 	korgExplosionSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 1920,
 		cameraShake = 1920,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -621,10 +566,8 @@ local unitDeaths = {
 		}
 	},
 	juggernaut = {
-		weaponType = "Cannon",
 		areaofeffect = 280,
 		camerashake = 280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -639,10 +582,8 @@ local unitDeaths = {
 		}
 	},
 	juggernautSelfd = {
-		weaponType = "Cannon",
 		areaofeffect = 430,
 		camerashake = 430,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed4",
 		soundstart = "misicbm1",
@@ -658,10 +599,8 @@ local unitDeaths = {
 	},
 
 	flagshipExplosion = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -675,10 +614,8 @@ local unitDeaths = {
 		}
 	},
 	flagshipExplosionSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 700,
 		cameraShake = 700,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -694,10 +631,8 @@ local unitDeaths = {
 
 
 	decoycommander = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -710,10 +645,8 @@ local unitDeaths = {
 		}
 	},
 	decoycommanderSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -726,10 +659,8 @@ local unitDeaths = {
 		}
 	},
 	minifusionExplosion = {
-		weaponType = "Cannon",
 		AreaOfEffect = 320,
 		cameraShake = 320,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -743,10 +674,8 @@ local unitDeaths = {
 		}
 	},
 	fusionExplosion = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -760,10 +689,8 @@ local unitDeaths = {
 		}
 	},
 	fusionExplosionSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 768,
 		cameraShake = 768,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -778,10 +705,8 @@ local unitDeaths = {
 	},
 
 	['fusionExplosion-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -795,10 +720,8 @@ local unitDeaths = {
 		}
 	},
 	['fusionExplosionSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 768,
 		cameraShake = 768,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -812,11 +735,9 @@ local unitDeaths = {
 		}
 	},
 
-	advancedFusionExplosion = {
-		weaponType = "Cannon",
+	advancedFusionExplosion = { --this explosion does not generate a distortion effect for unknown reasons
 		AreaOfEffect = 1280,
 		cameraShake = 1280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -829,11 +750,26 @@ local unitDeaths = {
 			unitexplosion = 1,
 		}
 	},
+
+	customfusionexplo = {
+		AreaOfEffect = 1280,
+		cameraShake = 1280,
+		impulsefactor = impulsefactor,
+		soundhit = "xplonuk3",
+		soundstart = "largegun",
+		explosiongenerator = "custom:afusexpl",
+		damage = {
+			commanders = 2800,
+			default = 10600,
+		},
+		customparams = {
+			unitexplosion = 1,
+		}
+	},
+
 	advancedFusionExplosionSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 1920,
 		cameraShake = 1920,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -848,10 +784,8 @@ local unitDeaths = {
 	},
 
 	scavcomexplosion = {
-		weaponType = "Cannon",
 		areaofeffect = 500,
 		camerashake = 500,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -866,10 +800,8 @@ local unitDeaths = {
 	},
 
 	ScavComBossExplo = {
-		weaponType = "Cannon",
 		AreaOfEffect = 3000,
 		cameraShake = 3000,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhitwet = "newboomuw",
 		soundhit = "newboom",
@@ -886,13 +818,11 @@ local unitDeaths = {
 
 	--NUKE EXPLOSIONS WITH DAMAGE--
 
-	commanderexplosion = {
+	oldcommanderexplosion = {
 		name = "Matter/AntimatterExplosion",
-		weaponType = "Cannon",
 		AreaOfEffect = 700,
 		cameraShake = 510,
 		explosionSpeed = 725,
-		impulseboost = impulseboost*2,
 		impulsefactor = impulsefactor,
 		soundhitwet = "newboomuw",
 		soundhit = "newboom",
@@ -912,98 +842,106 @@ local unitDeaths = {
 		}
 	},
 
+	commanderexplosion = {
+		name = "Matter/AntimatterExplosion",
+		AreaOfEffect = 700,
+		cameraShake = 510,
+		explosionSpeed = 725,
+		impulsefactor = impulsefactor,
+		soundhitwet = "newboomuw",
+		soundhit = "newboom",
+		soundstart = "largegun",
+		soundstartvolume = 25,
+		soundhitvolume = 25,
+		soundhitwetvolume = 34,
+		explosiongenerator = "custom:shockwaveceg",
+		craterboost = 4,
+		cratermult = 2,
+		edgeeffectiveness = 0,
+		damage = {
+			default = 5000,
+		},
+		customparams = {
+			unitexplosion = 1,
+		}
+	},
+
+
 	--BUILDING DEATHS--
 
 	WallExplosionMetal = {
-		weaponType = "Cannon",
 		AreaOfEffect = 36,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplodragmetal",
 		--soundstart = "metalhit",
 		explosiongenerator = "custom:wallexplosion-metal",
 		damage = {
-			default = 610,
-			walls = 0,
+			default = 0,
 		},
 		customparams = {
 			unitexplosion = 1,
 		},
 	},
 	WallExplosionMetalXL = {
-		weaponType = "Cannon",
 		AreaOfEffect = 38,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplodragmetal",
 		--soundstart = "metalhit",
 		explosiongenerator = "custom:wallexplosion-metal",
 		damage = {
-			default = 1530,
-			walls = 0,
+			default = 0,
 		},
 		customparams = {
 			unitexplosion = 1,
 		},
 	},
 	WallExplosionConcrete = {
-		weaponType = "Cannon",
 		AreaOfEffect = 36,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplodragconcrete",
 		--soundstart = "metalhit",
 		explosiongenerator = "custom:wallexplosion-concrete",
 		damage = {
-			default = 610,
-			walls = 0,
+			default = 0,
 		},
 		customparams = {
 			unitexplosion = 1,
 		},
 	},
 	WallExplosionConcreteXL = {
-		weaponType = "Cannon",
 		AreaOfEffect = 38,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplodragconcrete",
 		--soundstart = "metalhit",
 		explosiongenerator = "custom:wallexplosion-concrete",
 		damage = {
-			default = 1530,
-			walls = 0,
+			default = 0,
 		},
 		customparams = {
 			unitexplosion = 1,
 		},
 	},
 	WallExplosionWater = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplodragwater",
 		--soundstart = "metalhit",
 		explosiongenerator = "custom:wallexplosion-water",
 		damage = {
-			default = 560,
-			walls = 0,
+			default = 0,
 		},
 		customparams = {
 			unitexplosion = 1,
 		},
 	},
 	tinyBuildingExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 25,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1016,10 +954,8 @@ local unitDeaths = {
 		}
 	},
 	tinyBuildingExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 40,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1032,10 +968,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyBuildingExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 25,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1048,10 +982,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyBuildingExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 40,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1065,10 +997,8 @@ local unitDeaths = {
 	},
 
 	smallBuildingExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 180,
 		cameraShake = 180,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1081,10 +1011,8 @@ local unitDeaths = {
 		}
 	},
 	smallBuildingExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 240,
 		cameraShake = 240,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1097,10 +1025,8 @@ local unitDeaths = {
 		}
 	},
 	smallMex = {
-		weaponType = "Cannon",
 		AreaOfEffect = 240,
 		cameraShake = 240,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1113,10 +1039,8 @@ local unitDeaths = {
 		}
 	},
 	['smallBuildingExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 180,
 		cameraShake = 180,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1129,10 +1053,8 @@ local unitDeaths = {
 		}
 	},
 	['smallBuildingExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 240,
 		cameraShake = 240,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplosml3",
 		soundstart = "largegun",
@@ -1146,10 +1068,8 @@ local unitDeaths = {
 	},
 
 	mediumBuildingExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 260,
 		cameraShake = 260,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed1",
 		soundstart = "largegun",
@@ -1162,10 +1082,8 @@ local unitDeaths = {
 		}
 	},
 	mediumBuildingExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 360,
 		cameraShake = 360,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed1",
 		soundstart = "largegun",
@@ -1178,10 +1096,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumBuildingExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 260,
 		cameraShake = 260,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed1",
 		soundstart = "largegun",
@@ -1194,10 +1110,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumBuildingExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 360,
 		cameraShake = 360,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed1",
 		soundstart = "largegun",
@@ -1211,10 +1125,8 @@ local unitDeaths = {
 	},
 
 	largeBuildingExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 340,
 		cameraShake = 340,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1227,10 +1139,8 @@ local unitDeaths = {
 		}
 	},
 	largeBuildingExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1243,10 +1153,8 @@ local unitDeaths = {
 		}
 	},
 	['largeBuildingExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 340,
 		cameraShake = 340,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1259,10 +1167,8 @@ local unitDeaths = {
 		}
 	},
 	['largeBuildingExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 480,
 		cameraShake = 480,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1276,10 +1182,8 @@ local unitDeaths = {
 	},
 
 	hugeBuildingExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 420,
 		cameraShake = 420,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1292,10 +1196,8 @@ local unitDeaths = {
 		}
 	},
 	hugeBuildingExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 580,
 		cameraShake = 580,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1308,10 +1210,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeBuildingExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 420,
 		cameraShake = 420,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1324,10 +1224,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeBuildingExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 580,
 		cameraShake = 580,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1344,10 +1242,8 @@ local unitDeaths = {
 	--UNIT DEATHS--
 
 	tinyExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 24,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1360,10 +1256,8 @@ local unitDeaths = {
 		}
 	},
 	tinyExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 44,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1376,10 +1270,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyExplosionGeneric-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 24,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1392,10 +1284,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyExplosionGenericSelfd-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 44,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1408,10 +1298,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 24,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1424,10 +1312,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 44,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1440,10 +1326,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyExplosionGeneric-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 24,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1456,10 +1340,8 @@ local unitDeaths = {
 		}
 	},
 	['tinyExplosionGenericSelfd-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 44,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1473,10 +1355,8 @@ local unitDeaths = {
 	},
 
 	smallExplosionGenericAir = {
-		weaponType = "Cannon",
 		AreaOfEffect = 24,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1490,10 +1370,8 @@ local unitDeaths = {
 	},
 
 	smallExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 36,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1506,10 +1384,8 @@ local unitDeaths = {
 		}
 	},
 	smallExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 60,
 		cameraShake = 60,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1522,10 +1398,8 @@ local unitDeaths = {
 		}
 	},
 	['smallExplosionGeneric-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 36,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1538,10 +1412,8 @@ local unitDeaths = {
 		}
 	},
 	['smallExplosionGenericSelfd-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 60,
 		cameraShake = 60,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1554,10 +1426,8 @@ local unitDeaths = {
 		}
 	},
 	['smallExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 36,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1570,10 +1440,8 @@ local unitDeaths = {
 		}
 	},
 	['smallExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 60,
 		cameraShake = 60,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1586,10 +1454,8 @@ local unitDeaths = {
 		}
 	},
 	['smallExplosionGeneric-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 36,
 		cameraShake = 0,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1602,10 +1468,8 @@ local unitDeaths = {
 		}
 	},
 	['smallExplosionGenericSelfd-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 60,
 		cameraShake = 60,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1619,10 +1483,8 @@ local unitDeaths = {
 	},
 
 	mediumExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1635,10 +1497,8 @@ local unitDeaths = {
 		}
 	},
 	mediumExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1651,10 +1511,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumExplosionGeneric-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1667,10 +1525,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumExplosionGenericSelfd-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1683,10 +1539,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1699,10 +1553,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1715,10 +1567,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumExplosionGeneric-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1731,10 +1581,8 @@ local unitDeaths = {
 		}
 	},
 	['mediumExplosionGenericSelfd-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1748,10 +1596,8 @@ local unitDeaths = {
 	},
 
 	largeExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 64,
 		cameraShake = 64,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1764,10 +1610,8 @@ local unitDeaths = {
 		}
 	},
 	largeExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 120,
 		cameraShake = 120,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1780,10 +1624,8 @@ local unitDeaths = {
 		}
 	},
 	['largeExplosionGeneric-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 64,
 		cameraShake = 64,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1796,10 +1638,8 @@ local unitDeaths = {
 		}
 	},
 	['largeExplosionGenericSelfd-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 120,
 		cameraShake = 120,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1812,10 +1652,8 @@ local unitDeaths = {
 		}
 	},
 	['largeExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 64,
 		cameraShake = 64,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1828,10 +1666,8 @@ local unitDeaths = {
 		}
 	},
 	['largeExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 120,
 		cameraShake = 120,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1844,10 +1680,8 @@ local unitDeaths = {
 		}
 	},
 	['largeExplosionGeneric-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 64,
 		cameraShake = 64,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1860,10 +1694,8 @@ local unitDeaths = {
 		}
 	},
 	['largeExplosionGenericSelfd-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 120,
 		cameraShake = 120,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg3",
 		soundstart = "largegun",
@@ -1877,10 +1709,8 @@ local unitDeaths = {
 	},
 
 	hugeExplosionGeneric = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1893,10 +1723,8 @@ local unitDeaths = {
 		}
 	},
 	explosiont3 = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1909,10 +1737,8 @@ local unitDeaths = {
 		}
 	},
 	explosiont3med = {
-		weaponType = "Cannon",
 		AreaOfEffect = 48,
 		cameraShake = 48,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed2",
 		soundstart = "largegun",
@@ -1925,10 +1751,8 @@ local unitDeaths = {
 		}
 	},
 	explosiont3xl = {
-		weaponType = "Cannon",
 		AreaOfEffect = 160,
 		cameraShake = 160,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1941,10 +1765,8 @@ local unitDeaths = {
 		}
 	},
 	explosiont3xxl = {
-		weaponType = "Cannon",
 		AreaOfEffect = 280,
 		cameraShake = 280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1957,10 +1779,8 @@ local unitDeaths = {
 		}
 	},
 	hugeExplosionGenericSelfd = {
-		weaponType = "Cannon",
 		AreaOfEffect = 160,
 		cameraShake = 160,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1973,10 +1793,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeExplosionGeneric-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -1989,10 +1807,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeExplosionGenericSelfd-builder'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 160,
 		cameraShake = 160,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -2005,10 +1821,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeExplosionGeneric-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -2021,10 +1835,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeExplosionGenericSelfd-uw'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 160,
 		cameraShake = 160,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -2037,10 +1849,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeExplosionGeneric-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 96,
 		cameraShake = 96,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -2053,10 +1863,8 @@ local unitDeaths = {
 		}
 	},
 	['hugeExplosionGenericSelfd-phib'] = {
-		weaponType = "Cannon",
 		AreaOfEffect = 160,
 		cameraShake = 160,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -2069,10 +1877,8 @@ local unitDeaths = {
 		}
 	},
 	lootboxExplosion1 = {
-		weaponType = "Cannon",
 		AreaOfEffect = 340,
 		cameraShake = 340,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplomed3",
 		soundstart = "largegun",
@@ -2085,10 +1891,8 @@ local unitDeaths = {
 		}
 	},
 	lootboxExplosion2 = {
-		weaponType = "Cannon",
 		AreaOfEffect = 620,
 		cameraShake = 620,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplolrg4",
 		soundstart = "largegun",
@@ -2101,10 +1905,8 @@ local unitDeaths = {
 		}
 	},
 	lootboxExplosion3 = {
-		weaponType = "Cannon",
 		AreaOfEffect = 920,
 		cameraShake = 920,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "xplonuk3",
 		soundstart = "largegun",
@@ -2117,10 +1919,8 @@ local unitDeaths = {
 		}
 	},
 	lootboxExplosion4 = {
-		weaponType = "Cannon",
 		AreaOfEffect = 1280,
 		cameraShake = 1280,
-		impulseboost = impulseboost,
 		impulsefactor = impulsefactor,
 		soundhit = "newboom",
 		soundstart = "largegun",
@@ -2140,7 +1940,6 @@ local unitDeaths = {
 		edgeeffectiveness = 0.55,
 		explosiongenerator = "custom:scav_mist_explosion",
 		firestarter = 20,
-		impulseboost = 0,
 		impulsefactor = 0,
 		name = "ScavMistExplo",
 		paralyzer = 1,
@@ -2162,7 +1961,6 @@ local unitDeaths = {
 		edgeeffectiveness = 0.75,
 		explosiongenerator = "custom:scav_mist_explosion",
 		firestarter = 20,
-		impulseboost = 0,
 		impulsefactor = 0,
 		name = "ScavMistExplo",
 		paralyzer = 1,
@@ -2184,7 +1982,6 @@ local unitDeaths = {
 		edgeeffectiveness = 0.75,
 		explosiongenerator = "custom:scav_mist_explosion",
 		firestarter = 20,
-		impulseboost = 0,
 		impulsefactor = 0,
 		name = "ScavMistExplo",
 		paralyzer = 1,

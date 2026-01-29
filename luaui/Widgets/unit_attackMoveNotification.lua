@@ -1,3 +1,5 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Attack and Move Notification",
@@ -10,6 +12,10 @@ function widget:GetInfo()
 	}
 end
 
+
+-- Localized functions for performance
+local mathRandom = math.random
+
 local alarmInterval = 15        --seconds
 
 local spGetLocalTeamID = Spring.GetLocalTeamID
@@ -20,7 +26,7 @@ local spDiffTimers = Spring.DiffTimers
 local spIsUnitInView = Spring.IsUnitInView
 local spGetUnitPosition = Spring.GetUnitPosition
 local spSetLastMessagePosition = Spring.SetLastMessagePosition
-local random = math.random
+local random = mathRandom
 
 local lastAlarmTime = nil
 local lastCommanderAlarmTime = nil

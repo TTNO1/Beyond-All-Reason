@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name = "Transportee Hider",
@@ -19,6 +21,8 @@ local SetUnitStealth = Spring.SetUnitStealth
 local SetUnitSonarStealth = Spring.SetUnitSonarStealth
 local GetUnitDefID = Spring.GetUnitDefID
 local GiveOrderToUnit = Spring.GiveOrderToUnit
+local GetAllUnits = Spring.GetAllUnits
+local GetUnitTeam = Spring.GetUnitTeam
 
 local CMD_LOAD_ONTO = CMD.LOAD_ONTO
 local CMD_STOP = CMD.STOP
@@ -42,10 +46,9 @@ for unitDefID, unitDef in pairs(UnitDefs) do
 end
 
 function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions, cmdTag, playerID, fromSynced, fromLua)
-	if cmdID == CMD_LOAD_ONTO then
-		local transportID = cmdParams[1]
-		toBeLoaded[unitID] = transportID
-	end
+	-- accepts: CMD.LOAD_ONTO
+	local transportID = cmdParams[1]
+	toBeLoaded[unitID] = transportID
 	return true
 end
 
@@ -55,15 +58,17 @@ function gadget:UnitCreated(unitID, unitDefID, teamID)
 	end
 end
 
-function gadget:UnitDestroyed(unitID, unitDefID, unitTeam)
+function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
 	massLeft[unitID] = nil
 	toBeLoaded[unitID] = nil
 end
 
 function gadget:Initialize()
-	local allUnits = Spring.GetAllUnits()
-	for _, unitID in ipairs(allUnits) do
-		gadget:UnitCreated(unitID, Spring.GetUnitDefID(unitID), Spring.GetUnitTeam(unitID))
+	gadgetHandler:RegisterAllowCommand(CMD_LOAD_ONTO)
+	local allUnits = GetAllUnits()
+	for i = 1, #allUnits do
+		local unitID = allUnits[i]
+		gadget:UnitCreated(unitID, GetUnitDefID(unitID), GetUnitTeam(unitID))
 	end
 end
 

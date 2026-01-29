@@ -3,6 +3,8 @@ if Spring.Utilities.Gametype.IsSinglePlayer() then
 	return
 end
 
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
     return {
         name      = "Logger",
@@ -17,14 +19,18 @@ end
 
 if gadgetHandler:IsSyncedCode() then
 
+	local mathRandom = math.random
+	local stringChar = string.char
+	local tableInsert = table.insert
+
 	local charset = {}  do -- [0-9a-zA-Z]
-		for c = 48, 57  do table.insert(charset, string.char(c)) end
-		for c = 65, 90  do table.insert(charset, string.char(c)) end
-		for c = 97, 122 do table.insert(charset, string.char(c)) end
+		for c = 48, 57  do tableInsert(charset, stringChar(c)) end
+		for c = 65, 90  do tableInsert(charset, stringChar(c)) end
+		for c = 97, 122 do tableInsert(charset, stringChar(c)) end
 	end
 	local function randomString(length)
 		if not length or length <= 0 then return '' end
-		return randomString(length - 1) .. charset[math.random(1, #charset)]
+		return randomString(length - 1) .. charset[mathRandom(1, #charset)]
 	end
 
 	local validation = randomString(2)
@@ -71,7 +77,7 @@ else
 		end
 	end
 
-	function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
+	function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
 		--Spring.Echo("gadget:UnitDestroyed", unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
 		-- Only send a message from the attacker, when attacking a different team
 		if (not mySpec and attackerTeam == myTeamID) and (unitTeam ~= attackerTeam) then 

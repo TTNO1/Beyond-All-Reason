@@ -1,7 +1,6 @@
 VFS.Include('init.lua')
 
 -- See: https://springrts.com/wiki/Modrules.lua
-local xpmultiplier = Spring.GetModOptions().experimentalxpgain
 local useQTPFS = Script.IsEngineMinVersion(105, 0, 2020)
 
 XPValues = {
@@ -69,7 +68,7 @@ local modrules = {
 	},
 
 	movement = {
-		allowUnitCollisionDamage = false,	-- default: true if using QTPFS pathfinder.  Do unit-unit (skidding) collisions cause damage?
+		allowUnitCollisionDamage = true,	-- default: true if using QTPFS pathfinder.  Do unit-unit (skidding) collisions cause damage?
 		allowUnitCollisionOverlap = false,	-- can mobile units collision volumes overlap one another? Allows unit movement like this (video http://www.youtube.com/watch?v=mRtePUdVk2o ) at the cost of more 'clumping'.
 		allowCrushingAlliedUnits = true,	-- default: false.  Can allied ground units crush each other during collisions? Units still have to be explicitly set as crushable using the crushable parameter of Spring.SetUnitBlocking.
 		allowGroundUnitGravity = false,		-- default: true.   Allows fast moving mobile units to 'catch air' as they move over terrain.
@@ -103,6 +102,7 @@ local modrules = {
 		pfUpdateRateScale = 1,			-- default: 1.  Multiplier for the update rate
 		pfRawMoveSpeedThreshold = 0,	-- default: 0.  Controls the speed modifier (which includes typemap boosts and up/down hill modifiers) under which units will never do raw move, regardless of distance etc. Defaults to 0, which means units will not try to raw-move into unpathable terrain (e.g. typemapped lava, cliffs, water). You can set it to some positive value to make them avoid pathable but very slow terrain (for example if you set it to 0.2 then they will not raw-move across terrain where they move at 20% speed or less, and will use normal pathing instead - which may still end up taking them through that path).
 		pfHcostMult = 0.2,				-- default: 0.2.  A float value between 0 and 2. Controls how aggressively the pathing search prioritizes nodes going in the direction of the goal. Higher values mean pathing is cheaper, but can start producing degenerate paths where the unit goes straight at the goal and then has to hug a wall.
+		nativeExcessSharing = Spring.GetModOptions().easytax==false and Spring.GetModOptions().tax_resource_sharing_amount==0,	-- default: true.  If true, the engine will handle resource overflow sharing between allied teams. If false, overflow sharing is disabled and we use Lua implementation in game_tax_resource_sharing.lua gadget.
 	},
 
 	transportability = {
@@ -119,10 +119,14 @@ local modrules = {
 	},
 
 	experience = {
-		experienceMult = XPValues.experienceMult * xpmultiplier, -- Controls the amount of experience gained by units engaging in combat. The formulae used are: xp for damage = 0.1 * experienceMult * damage / target_HP * target_power / attacker_power.  xp for kill = 0.1 * experienceMult * target_power / attacker_power. Where power can be set by the UnitDef tag.
+		experienceMult = XPValues.experienceMult, -- Controls the amount of experience gained by units engaging in combat. The formulae used are: xp for damage = 0.1 * experienceMult * damage / target_HP * target_power / attacker_power.  xp for kill = 0.1 * experienceMult * target_power / attacker_power. Where power can be set by the UnitDef tag.
 		powerScale = XPValues.powerScale,	-- Controls how gaining experience changes the relative power of the unit. The formula used is Power multiplier = powerScale * (1 + xp / (xp + 1)).
 		healthScale = XPValues.healthScale,	-- Controls how gaining experience increases the maxDamage (total hitpoints) of the unit. The formula used is Health multiplier = healthScale * (1 + xp / (xp + 1)).
 		reloadScale = XPValues.reloadScale,	-- Controls how gaining experience decreases the reloadTime of the unit's weapons. The formula used is Rate of fire multiplier = reloadScale * (1 + xp / (xp + 1)).
+	},
+
+	damage = {
+		debris = 0, -- body parts flying off dead units
 	},
 }
 

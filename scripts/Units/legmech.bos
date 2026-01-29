@@ -27,7 +27,7 @@ static-var gun_1, torsoaim, miniguncount, animFramesPerKeyframe, movespeed,
 //--start ups :)
 //--------------------------------------------------------
 
-walk() 	// (c) CC BY NC ND Beherith mysterme@gmail.com
+walk()
 {
 	set-signal-mask SIG_WALK;	if (bMoving) { //Frame:4
 			//turn lfoot to x-axis <-45.174461> speed <1339.883614> / animSpeed; 
@@ -478,8 +478,8 @@ AimWeapon1(heading, pitch)
 	
 	var cauaim;
     var cauface;
-    cauaim = get ATAN(aim_z, aim_x);                        //use arctan (ATAN) to calculate the angle of the turret. The result is in cau, which is the unit this code format uses for angles. Its up to 32768 (180°), positive or negative depending on direction
-    cauface = get ATAN(face_z, face_x);                        //use arctan (ATAN) to calculate the angle of the hull. The result is in cau, which is the unit this code format uses for angles. Its up to 32768 (180°), positive or negative depending on direction
+    cauaim = get ATAN(aim_z, aim_x);                        //use arctan (ATAN) to calculate the angle of the turret. The result is in cau, which is the unit this code format uses for angles. Its up to 32768 (180 degrees), positive or negative depending on direction
+    cauface = get ATAN(face_z, face_x);                        //use arctan (ATAN) to calculate the angle of the hull. The result is in cau, which is the unit this code format uses for angles. Its up to 32768 (180 degrees), positive or negative depending on direction
     
     //var torsoaim;
     torsoaim = cauface - cauaim;                                //calculate angle of turret relative to the hull

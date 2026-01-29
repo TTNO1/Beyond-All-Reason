@@ -1,4 +1,6 @@
 
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name      = "Stealthy Passengers",
@@ -17,6 +19,7 @@ end
 
 local spGetUnitDefID = Spring.GetUnitDefID
 local spSetUnitStealth = Spring.SetUnitStealth
+local stringFind = string.find
 
 local stealthyUnits = {}
 local stealthyTransports = {
@@ -24,7 +27,7 @@ local stealthyTransports = {
 }
 for udid, ud in pairs(UnitDefs) do
 	for id, v in pairs(stealthyTransports) do
-		if string.find(ud.name, UnitDefs[id].name) then
+		if stringFind(ud.name, UnitDefs[id].name, 1, true) then
 			stealthyTransports[udid] = v
 		end
 	end

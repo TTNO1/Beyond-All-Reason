@@ -1,4 +1,6 @@
 
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
   return {
     name      = "Select n Center!",
@@ -24,7 +26,8 @@ local go = true
 
 function widget:Update()
   local t = Spring.GetGameSeconds()
-  if (select(3,Spring.GetPlayerInfo(Spring.GetMyPlayerID(),false)) or t > 10) then
+  local isSpec = select(3, Spring.GetPlayerInfo(Spring.GetMyPlayerID(), false))
+  if (isSpec or t > 10) then
     widgetHandler:RemoveWidget()
     return
   end

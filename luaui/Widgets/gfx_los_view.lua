@@ -1,4 +1,6 @@
 
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name      = "LOS View",
@@ -10,6 +12,11 @@ function widget:GetInfo()
 		enabled   = true
 	}
 end
+
+
+-- Localized Spring API for performance
+local spGetGameFrame = Spring.GetGameFrame
+local spGetSpectatingState = Spring.GetSpectatingState
 
 local myPlayerID = Spring.GetMyPlayerID()
 local lastMapDrawMode = Spring.GetMapDrawMode()
@@ -27,7 +34,7 @@ local function TurnOffLOS()
 end
 
 function widget:Initialize()
-	if (Spring.GetGameFrame() > 0 and lastMapDrawMode == "los") then
+	if (spGetGameFrame() > 0 and lastMapDrawMode == "los") then
 		TurnOnLOS()
 	else
 		TurnOffLOS()
@@ -39,7 +46,7 @@ function widget:GameFrame(frame)	-- somehow widget:GameStart() didnt work
 	if frame == 1 and not gamestarted then
 		gamestarted = true
 		myPlayerID = Spring.GetMyPlayerID()
-		if Spring.GetSpectatingState() then
+		if spGetSpectatingState() then
 			TurnOffLOS()
 		else
 			TurnOnLOS()
@@ -52,9 +59,9 @@ function widget:Shutdown()
 end
 
 function widget:PlayerChanged(playerID)
-	if Spring.GetGameFrame() > 0 then
+	if spGetGameFrame() > 0 then
 		if playerID == myPlayerID then
-			if Spring.GetSpectatingState() then
+			if spGetSpectatingState() then
 				TurnOffLOS()
 			else
 				TurnOnLOS()

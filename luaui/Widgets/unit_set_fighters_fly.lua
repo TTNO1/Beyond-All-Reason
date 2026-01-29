@@ -1,5 +1,7 @@
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
     return {
         name      = "Set fighters on Fly mode",
@@ -13,6 +15,10 @@ function widget:GetInfo()
     }
 end
 
+
+-- Localized Spring API for performance
+local spGetMyTeamID = Spring.GetMyTeamID
+
 -- this widget is a variant of unit_air_allways_fly: project page on github: https://github.com/jamerlan/unit_air_allways_fly
 
 
@@ -22,11 +28,11 @@ local spGiveOrderToUnit = Spring.GiveOrderToUnit
 local spGetTeamUnits = Spring.GetTeamUnits
 local spGetUnitDefID = Spring.GetUnitDefID
 local cmdFly = 145
-local myTeamID = Spring.GetMyTeamID()
+local myTeamID = spGetMyTeamID()
 
 local isFighter = {}
 for udid, ud in pairs(UnitDefs) do
-    if ud.customParams.fighter or ud.customParams.drone then
+    if ud.customParams.fighter or ud.customParams.drone or ud.customParams.flyingcarrier then
         isFighter[udid] = true
     end
 end
@@ -52,7 +58,7 @@ function widget:UnitGiven(unitID, unitDefID, unitTeam, oldTeam)
 end
 
 function widget:PlayerChanged(playerID)
-    myTeamID = Spring.GetMyTeamID()
+    myTeamID = spGetMyTeamID()
     if Spring.GetSpectatingState() then
         widgetHandler:RemoveWidget()
     end

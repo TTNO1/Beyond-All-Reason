@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
     return {
         name      = "Dragons Disguise",
@@ -16,7 +18,6 @@ end
 
 local GetUnitCOBValue = Spring.GetUnitCOBValue
 local SetUnitNeutral = Spring.SetUnitNeutral
-local GetUnitStates = Spring.GetUnitStates
 local ValidUnitID = Spring.ValidUnitID
 local neutralUnits = {}
 local armourTurrets = {}
@@ -29,6 +30,15 @@ for udid,ud in ipairs(UnitDefs) do
 end
 local UPDATE = 30
 local timeCounter = 15
+
+function gadget:Initialize()
+	for _, unitID in ipairs(Spring.GetAllUnits()) do
+		if not Spring.GetUnitIsBeingBuilt(unitID) then
+			---@diagnostic disable-next-line: missing-parameter, param-type-mismatch -- OK
+			gadget:UnitFinished(unitID, Spring.GetUnitDefID(unitID))
+		end
+	end
+end
 
 function gadget:GameFrame(n)
   if (n >= timeCounter) then
@@ -53,7 +63,7 @@ function gadget:GameFrame(n)
   end
 end
 
-function gadget:UnitDestroyed(unitID, unitDefID, unitTeam)
+function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
   neutralUnits[unitID] = nil
 end
 

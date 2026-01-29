@@ -1,14 +1,24 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Sensor Ranges Radar Preview",
 		desc = "Raytraced Radar Range Coverage on building Radar (GL4)",
 		author = "Beherith",
 		date = "2021.07.12",
-		license = "Lua: GPLv2, GLSL: (c) Beherith (mysterme@gmail.com)",
+		license = "GNU GPL v2",
 		layer = 0,
 		enabled = true
 	}
 end
+
+
+-- Localized functions for performance
+local mathFloor = math.floor
+
+-- Localized Spring API for performance
+local spGetUnitDefID = Spring.GetUnitDefID
+local spEcho = Spring.Echo
 
 ------- GL4 NOTES -----
 -- There is regular radar and advanced radar, assumed to have identical ranges!
@@ -20,15 +30,15 @@ local largeradarrange = 3500	-- updates to 'armarad' value
 
 local cmdidtoradarsize = {}
 local radaremitheight = {}
+local radarYOffset = 50			-- amount added to vertical height of overlay to more closely reflect engine radarLOS
 
 -- Globals
 local mousepos = { 0, 0, 0 }
 local spGetActiveCommand = Spring.GetActiveCommand
 
 
-local luaShaderDir = "LuaUI/Widgets/Include/"
-local LuaShader = VFS.Include(luaShaderDir .. "LuaShader.lua")
-VFS.Include(luaShaderDir .. "instancevbotable.lua")
+local LuaShader = gl.LuaShader
+local InstanceVBOTable = gl.InstanceVBOTable
 
 local radarTruthShader = nil
 
@@ -44,46 +54,21 @@ for unitDefID, unitDef in pairs(UnitDefs) do
 		smallradarrange = unitDef.radarDistance
 	end
 
-	if unitDef.name == 'armrad' then
-		cmdidtoradarsize[-1 * unitDefID] = "small"
-		radaremitheight[-1 * unitDefID] = 66
-		--[[Spring.Echo(unitDef.radarHeight) -- DOES NOT WORK NEITHER OF THEM
-		Spring.Echo(unitDef.radarEmitHeight)
-		Spring.Echo(unitDef.radaremitheight)
-		Spring.Echo(unitDef.radarDistance)
-		for k,v in pairs(unitDef) do
-			Spring.Echo(k,v)
-		end]]--
-	end
-	if unitDef.name == 'armfrad' then
-		cmdidtoradarsize[-1 * unitDefID] = "small"
-		radaremitheight[-1 * unitDefID] = 52
-	end
-	if unitDef.name == 'corrad' then
-		cmdidtoradarsize[-1 * unitDefID] = "small"
-		radaremitheight[-1 * unitDefID] = 72
-	end
-	if unitDef.name == 'legrad' then
-		cmdidtoradarsize[-1 * unitDefID] = "small"
-		radaremitheight[-1 * unitDefID] = 72
-	end
-	if unitDef.name == 'corfrad' then
-		cmdidtoradarsize[-1 * unitDefID] = "small"
-		radaremitheight[-1 * unitDefID] = 72
-	end
-	if unitDef.name == 'corarad' then
-		cmdidtoradarsize[-1 * unitDefID] = "large"
-		radaremitheight[-1 * unitDefID] = 87
-	end
-	if unitDef.name == 'armarad' then
-		cmdidtoradarsize[-1 * unitDefID] = "large"
-		radaremitheight[-1 * unitDefID] = 66
+	if unitDef.radarDistance > 2000 then
+		radaremitheight[-1 * unitDefID] = unitDef.radarEmitHeight + radarYOffset
+
+		if unitDef.radarDistance == smallradarrange then
+			cmdidtoradarsize[-1 * unitDefID] = "small"
+		end
+		if unitDef.radarDistance == largeradarrange then
+			cmdidtoradarsize[-1 * unitDefID] = "large"
+		end
 	end
 end
 
 local shaderConfig = {}
-local vsSrcPath = "LuaUI/Widgets/Shaders/sensor_ranges_radar_preview.vert.glsl"
-local fsSrcPath = "LuaUI/Widgets/Shaders/sensor_ranges_radar_preview.frag.glsl"
+local vsSrcPath = "LuaUI/Shaders/sensor_ranges_radar_preview.vert.glsl"
+local fsSrcPath = "LuaUI/Shaders/sensor_ranges_radar_preview.frag.glsl"
 
 local shaderSourceCache = {
 		vssrcpath = vsSrcPath,
@@ -94,13 +79,13 @@ local shaderSourceCache = {
 			},
 		uniformFloat = {
 			radarcenter_range = { 2000, 100, 2000, 2000 },
-			resolution = { 64 },
+			resolution = { 128 },
 		  },
 		shaderConfig = shaderConfig,
 	}
 
 local function goodbye(reason)
-	Spring.Echo("radarTruthShader GL4 widget exiting with reason: " .. reason)
+	spEcho("radarTruthShader GL4 widget exiting with reason: " .. reason)
 	widgetHandler:RemoveWidget()
 end
 
@@ -111,14 +96,14 @@ local function initgl4()
 		goodbye("Failed to compile radarTruthShader  GL4 ")
 	end
 
-	local smol, smolsize = makePlaneVBO(1, 1, smallradarrange / SHADERRESOLUTION)
-	local smoli, smolisize = makePlaneIndexVBO(smallradarrange / SHADERRESOLUTION, smallradarrange / SHADERRESOLUTION, true)
+	local smol, smolsize = InstanceVBOTable.makePlaneVBO(1, 1, smallradarrange / SHADERRESOLUTION)
+	local smoli, smolisize = InstanceVBOTable.makePlaneIndexVBO(smallradarrange / SHADERRESOLUTION, smallradarrange / SHADERRESOLUTION, true)
 	smallradVAO = gl.GetVAO()
 	smallradVAO:AttachVertexBuffer(smol)
 	smallradVAO:AttachIndexBuffer(smoli)
 
-	local larg, largsize = makePlaneVBO(1, 1, largeradarrange / SHADERRESOLUTION)
-	local largi, largisize = makePlaneIndexVBO(largeradarrange / SHADERRESOLUTION, largeradarrange / SHADERRESOLUTION, true)
+	local larg, largsize = InstanceVBOTable.makePlaneVBO(1, 1, largeradarrange / SHADERRESOLUTION)
+	local largi, largisize = InstanceVBOTable.makePlaneIndexVBO(largeradarrange / SHADERRESOLUTION, largeradarrange / SHADERRESOLUTION, true)
 	largeradVAO = gl.GetVAO()
 	largeradVAO:AttachVertexBuffer(larg)
 	largeradVAO:AttachIndexBuffer(largi)
@@ -132,7 +117,7 @@ function widget:Initialize()
 	end
 
 	if (smallradarrange > 2200) then
-		Spring.Echo("Sensor Ranges Radar Preview does not support increased radar ranges modoptions, removing.")
+		spEcho("Sensor Ranges Radar Preview does not support increased radar ranges modoptions, removing.")
 		widgetHandler:RemoveWidget()
 		return
 	end
@@ -142,7 +127,7 @@ end
 
 function widget:SelectionChanged(sel)
 	selectedRadarUnitID = false
-	if #sel == 1 and Spring.GetUnitDefID(sel[1]) and cmdidtoradarsize[-Spring.GetUnitDefID(sel[1])] then
+	if #sel == 1 and spGetUnitDefID(sel[1]) and cmdidtoradarsize[-spGetUnitDefID(sel[1])] then
 		selectedRadarUnitID = sel[1]
 	end
 end
@@ -150,7 +135,7 @@ end
 function widget:DrawWorld()
 	local cmdID
 	if selectedRadarUnitID then
-		cmdID = Spring.GetUnitDefID(selectedRadarUnitID)
+		cmdID = spGetUnitDefID(selectedRadarUnitID)
 		if cmdID then
 			cmdID = -cmdID
 		else
@@ -187,9 +172,9 @@ function widget:DrawWorld()
 	gl.Texture(0, "$heightmap")
 	radarTruthShader:Activate()
 	radarTruthShader:SetUniform("radarcenter_range",
-		math.floor((mousepos[1] + 8) / (SHADERRESOLUTION * 2)) * (SHADERRESOLUTION * 2),
+		mathFloor((mousepos[1] + 8) / (SHADERRESOLUTION * 2)) * (SHADERRESOLUTION * 2),
 		mousepos[2] + radaremitheight[cmdID],
-		math.floor((mousepos[3] + 8) / (SHADERRESOLUTION * 2)) * (SHADERRESOLUTION * 2),
+		mathFloor((mousepos[3] + 8) / (SHADERRESOLUTION * 2)) * (SHADERRESOLUTION * 2),
 		whichradarsize == "small" and smallradarrange or largeradarrange
 	)
 	if whichradarsize == "small" then
@@ -203,4 +188,3 @@ function widget:DrawWorld()
 	gl.Culling(false)
 	gl.DepthTest(true)
 end
-

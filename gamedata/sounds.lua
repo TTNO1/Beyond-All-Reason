@@ -107,6 +107,8 @@ local soundData = {
 				['^disigun1$'] = 0.075 * 0.3,
 				-- ['^newboom$'] = 0.045 * 0.3,
 				['^xplomas2$'] = 0.225 * 0.3,
+				['^starfallchargup$'] = 4.0 * 0.3,
+				['^ministarfallchargup$'] = 4.0 * 0.3,
 			},
 		},
 		pitchmod = {
@@ -129,6 +131,8 @@ local soundData = {
 				['^xplolrg'] = 0.3,
 				['^nukelaunch$'] = 0.08,
 				['^nukelaunchalarm$'] = 0,
+				['^starfallchargup$'] = 0,
+				['^ministarfallchargup$'] = 0,
 			},
 		},
 		gainmod  = 0.2 * 0.3,
@@ -145,7 +149,13 @@ local soundData = {
 	-- WEAPON SOUNDS MULTI (more concurrent)
 	['weapons-mult'] = {
 		gain = 1.2 * 0.3,
-		pitchmod = 0.17,
+		pitchmod = {
+			default = 0.17,
+			custom = {
+				['^lasr'] = 0.03,
+				['^mgun'] = 0.02,
+			},
+		},
 		gainmod  = 0.2 * 0.3,
 		dopplerscale = 1.0,
 		maxconcurrent = 15,

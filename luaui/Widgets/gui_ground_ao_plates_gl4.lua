@@ -1,3 +1,5 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Ground AO Plates GL4",
@@ -7,8 +9,13 @@ function widget:GetInfo()
 		license = "GNU GPL, v2 or later",
 		layer = -1,
 		enabled = true,
+		depends = {'gl4'},
 	}
 end
+
+
+-- Localized Spring API for performance
+local spEcho = Spring.Echo
 
 -- Configurable Parts:
 local groundaoplatealpha = 1.0
@@ -20,7 +27,12 @@ local unitDefIDtoDecalInfo = {} -- key unitdef, table of {texfile = "", sizex = 
 
 local groundPlateVBO = nil
 local groundPlateShader = nil
-local luaShaderDir = "LuaUI/Widgets/Include/"
+
+local luaShaderDir = "LuaUI/Include/"
+local InstanceVBOTable = gl.InstanceVBOTable
+
+local pushElementInstance = InstanceVBOTable.pushElementInstance
+local popElementInstance  = InstanceVBOTable.popElementInstance
 
 local debugmode = false
 
@@ -34,8 +46,6 @@ local GL_LEQUAL = GL.LEQUAL
 local GL_POINTS = GL.POINTS
 local spGetUnitDefID = Spring.GetUnitDefID
 local spGetGameFrame = Spring.GetGameFrame
-local spGetGameFrame = Spring.GetGameFrame
-local glGetAtlasTexture = gl.GetAtlasTexture
 
 local function AddPrimitiveAtUnit(unitID, unitDefID, noUpload,reason)
 	local gf = spGetGameFrame()
@@ -46,7 +56,7 @@ local function AddPrimitiveAtUnit(unitID, unitDefID, noUpload,reason)
 	local decalInfo = unitDefIDtoDecalInfo[unitDefID]
 
 	local p,q,s,t = getUVCoords(atlas, decalInfo.texfile)
-	--Spring.Echo(decalInfo.texfile, p,q,s,t)
+	--spEcho(decalInfo.texfile, p,q,s,t)
 
 	return pushElementInstance(
 		groundPlateVBO, -- push into this Instance VBO Table
@@ -70,7 +80,7 @@ function widget:DrawWorldPreUnit()
 		firstRun = false
 	end
 	if groundPlateVBO.usedElements > 0 then
-		--Spring.Echo(groundPlateVBO.usedElements)
+		--spEcho(groundPlateVBO.usedElements)
 		glCulling(GL_BACK)
 		glDepthTest(GL_LEQUAL)
 		glDepthMask(false) --"BK OpenGL state resets", default is already false, could remove
@@ -95,7 +105,7 @@ function widget:Initialize()
 		if UD.customParams and UD.customParams.usebuildinggrounddecal and UD.customParams.buildinggrounddecaltype then
 			--local UD.name
 			local texname = "unittextures/" .. UD.customParams.buildinggrounddecaltype
-			--Spring.Echo(texname)
+			--spEcho(texname)
 			if atlas[texname] then
 				unitDefIDtoDecalInfo[id] = {
 						texfile = texname,
@@ -118,7 +128,8 @@ function widget:Initialize()
 	shaderConfig.ANIMATION = 0
 	-- MATCH CUS position as seed to sin, then pass it through geoshader into fragshader
 	shaderConfig.POST_VERTEX = "v_parameters.w = max(-0.2, sin((timeInfo.x + timeInfo.w) * 2.0/30.0 + float(UNITID) * 0.1)) + 0.2; // match CUS glow rate"
-	shaderConfig.POST_GEOMETRY = "g_uv.w = dataIn[0].v_parameters.w; gl_Position.z = (gl_Position.z) - 512.0 / (gl_Position.w); // send 16 elmos forward in depth buffer"
+	shaderConfig.ZPULL = 512.0 -- send 16 elmos forward in depth buffer"
+	shaderConfig.POST_GEOMETRY = "g_uv.w = dataIn[0].v_parameters.w;" -- pass the glow rate to the frag shader
 	shaderConfig.POST_SHADING = "fragColor.rgba = vec4(texcolor.rgb* (1.0 + g_uv.w), texcolor.a * g_uv.z);"
 	shaderConfig.MAXVERTICES = 4
 	shaderConfig.USE_CIRCLES = nil
@@ -127,7 +138,7 @@ function widget:Initialize()
 
 	groundPlateVBO, groundPlateShader = InitDrawPrimitiveAtUnit(shaderConfig, "Ground AO Plates")
 	if groundPlateVBO == nil then
-		Spring.Echo("Error while initializing InitDrawPrimitiveAtUnit, removing widget")
+		spEcho("Error while initializing InitDrawPrimitiveAtUnit, removing widget")
 		widgetHandler:RemoveWidget()
 		return
 	end
@@ -144,11 +155,11 @@ function widget:VisibleUnitAdded(unitID, unitDefID, unitTeam)
 end
 
 function widget:VisibleUnitsChanged(extVisibleUnits, extNumVisibleUnits)
-	clearInstanceTable(groundPlateVBO) -- clear all instances
+	InstanceVBOTable.clearInstanceTable(groundPlateVBO) -- clear all instances
 	for unitID, unitDefID in pairs(extVisibleUnits) do
 		AddPrimitiveAtUnit(unitID, unitDefID, true, "VisibleUnitsChanged") -- add them with noUpload = true
 	end
-	uploadAllElements(groundPlateVBO) -- upload them all
+	InstanceVBOTable.uploadAllElements(groundPlateVBO) -- upload them all
 end
 
 function widget:VisibleUnitRemoved(unitID) -- remove the corresponding ground plate if it exists

@@ -1,6 +1,8 @@
 include("keysym.h.lua")
 local versionNumber = "1.5"
 
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name      = "Easy Facing",
@@ -12,6 +14,10 @@ function widget:GetInfo()
 		enabled   = true
 	}
 end
+
+
+-- Localized Spring API for performance
+local spGetGameFrame = Spring.GetGameFrame
 
 -- 1.1 Tweaks by Pako, big thx!
 
@@ -46,7 +52,6 @@ end
 local spGetModKeyState      = Spring.GetModKeyState
 local spGetGameSeconds      = Spring.GetGameSeconds
 local spGetActiveCommand 	= Spring.GetActiveCommand
-local spGetActiveCmdDesc 	= Spring.GetActiveCmdDesc
 local spGetMouseState       = Spring.GetMouseState
 local spTraceScreenRay      = Spring.TraceScreenRay
 local spGetCameraVectors    = Spring.GetCameraVectors
@@ -73,7 +78,7 @@ local GL_TRIANGLES			= GL.TRIANGLES
 
 
 local function maybeRemoveSelf()
-    if Spring.GetSpectatingState() and (Spring.GetGameFrame() > 0 or gameStarted) then
+    if Spring.GetSpectatingState() and (spGetGameFrame() > 0 or gameStarted) then
         widgetHandler:RemoveWidget()
     end
 end
@@ -167,8 +172,13 @@ local function manipulateFacing()
 	ineffect = false
 
 	-- check if valid command
-	local idx, cmd_id, cmd_type, cmd_name = spGetActiveCommand()
+	local _, cmd_id, cmd_type = spGetActiveCommand()
 	if not cmd_id then return end
+
+	-- check if build command
+	if cmd_type ~= 20 then
+		return		-- quit here if not a build command
+	end
 
 	local mx,my,lmb,mmb,rmb = spGetMouseState()
 	if lmb and rmb then
@@ -183,12 +193,6 @@ local function manipulateFacing()
 		inDrag = true
 	else
 		inDrag = false
-	end
-
-	-- check if build command
-	local cmdDesc = spGetActiveCmdDesc( idx )
-	if cmdDesc["type"] ~= 20 then
-		return		-- quit here if not a build command
 	end
 
 	if inDrag then
@@ -218,13 +222,11 @@ local function drawOrientation()
 	local forceShowUnitDefID = getForceShowUnitDefID()
 	if not ineffect and not forceShowUnitDefID then return end
 
-	local idx, cmd_id, cmd_type, cmd_name = spGetActiveCommand()
-	local cmdDesc = spGetActiveCmdDesc( idx )
-	if (cmdDesc == nil or cmdDesc["type"] ~= 20) and not forceShowUnitDefID then
+	local _, cmd_id, cmd_type = spGetActiveCommand()
+	if cmd_type ~= 20 and not forceShowUnitDefID then
 		return		-- quit here if not a build command
 	end
 
-	-- check for an empty buildlist to avoid to draw for air repair pads
 	local unitDefID = forceShowUnitDefID or -cmd_id
 	if drawForAll == false and isntFactory[unitDefID] then
 		return
@@ -239,7 +241,7 @@ local function drawOrientation()
 
 	local _, coords = spTraceScreenRay(mx, my, true, true)
 	if not coords then return end
-	
+
 	local facing = spGetBuildFacing()
 	local centerX, centerY, centerZ = spPos2BuildPos( unitDefID, coords[1], coords[2], coords[3], facing )
 	local transSpace = unitZsize[unitDefID] * 4   --should be ysize but its not there?!?
@@ -289,7 +291,7 @@ function widget:PlayerChanged(playerID)
 end
 
 function widget:Initialize()
-    if Spring.IsReplay() or Spring.GetGameFrame() > 0 then
+    if Spring.IsReplay() or spGetGameFrame() > 0 then
         maybeRemoveSelf()
     end
 

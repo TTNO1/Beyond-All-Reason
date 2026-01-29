@@ -1,3 +1,5 @@
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name      = "Death Messages",
@@ -9,6 +11,10 @@ function widget:GetInfo()
 		enabled   = true
 	}
 end
+
+
+-- Localized functions for performance
+local tableInsert = table.insert
 
 local deathMessageKeys = {
 	'bowOut',
@@ -28,23 +34,24 @@ local teamNames = {}
 
 local function getTeamNames(teamID)
 	local playerNames = {}
-	local _, _, _, isAI = Spring.GetTeamInfo(teamID)
+	local _, _, _, isAI = Spring.GetTeamInfo(teamID, false)
 
-	if isAI then		
+	if isAI then
 		local _, _, _, name = Spring.GetAIInfo(teamID)
 		local niceName = Spring.GetGameRulesParam('ainame_' .. teamID)
-		
+
 		if niceName then
 			name = niceName
 		end
 
-		table.insert(playerNames, name)
+		tableInsert(playerNames, name)
 	else
 		local players = Spring.GetPlayerList(teamID)
-		
+
 		for _, playerID in pairs(players) do
-			local name = Spring.GetPlayerInfo(playerID)
-			table.insert(playerNames, name)
+			local name = Spring.GetPlayerInfo(playerID, false)
+			name = ((WG.playernames and WG.playernames.getPlayername) and WG.playernames.getPlayername(playerID)) or name
+			tableInsert(playerNames, name)
 		end
 	end
 

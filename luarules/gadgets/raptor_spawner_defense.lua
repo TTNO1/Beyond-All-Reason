@@ -6,6 +6,8 @@ else
 	return false
 end
 
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name = "Raptor Defense Spawner",
@@ -19,6 +21,7 @@ function gadget:GetInfo()
 end
 
 local config = VFS.Include('LuaRules/Configs/raptor_spawn_defs.lua')
+local EnemyLib = VFS.Include('LuaRules/Gadgets/Include/SpawnerEnemyLib.lua')
 
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -76,7 +79,9 @@ if gadgetHandler:IsSyncedCode() then
 	--------------------------------------------------------------------------------
 	--------------------------------------------------------------------------------
 	Spring.SetGameRulesParam("BossFightStarted", 0)
-	local queenLifePercent = 100
+	local nKilledQueens = 0
+	local nSpawnedQueens = 0
+	local nTotalQueens = Spring.GetModOptions().raptor_queen_count or 1
 	local maxTries = 30
 	local raptorUnitCap = math.floor(Game.maxUnits*0.8)
 	local minBurrows = 1
@@ -85,7 +90,7 @@ if gadgetHandler:IsSyncedCode() then
 	local t = 0 -- game time in secondstarget
 	local queenAnger = 0
 	local techAnger = 0
-	local queenMaxHP = 0
+	local aliveBossesMaxHealth = 0
 	local playerAggression = 0
 	local playerAggressionLevel = 0
 	local playerAggressionEcoValue = 0
@@ -124,13 +129,19 @@ if gadgetHandler:IsSyncedCode() then
 	local squadSpawnOptions = config.squadSpawnOptionsTable
 	--local miniBossCooldown = 0
 	local firstSpawn = true
+	local fullySpawned = false
+	local spawnRetries = 0
+	local spawnRetryTimeDiv = 20
+	local spawnAreaMultiplier = 2
 	local gameOver = nil
 	local humanTeams = {}
 	local spawnQueue = {}
 	local deathQueue = {}
 	local queenResistance = {}
-	local queenID
-	local raptorTeamID, raptorAllyTeamID
+	local queenIDs = {}
+	local bosses = {resistances = queenResistance, statuses = {}, playerDamages = {}}
+	local raptorTeamID = Spring.Utilities.GetRaptorTeamID()
+	local raptorAllyTeamID = Spring.Utilities.GetRaptorAllyTeamID()
 	local lsx1, lsz1, lsx2, lsz2
 	local burrows = {}
 	local heroRaptor = {}
@@ -160,6 +171,14 @@ if gadgetHandler:IsSyncedCode() then
 		needsrefresh = true,
 	}
 
+
+	local isObject = {}
+	for udefID, def in ipairs(UnitDefs) do
+		if def.modCategories['object'] or def.customParams.objectify then
+			isObject[udefID] = true
+		end
+	end
+
 	--------------------------------------------------------------------------------
 	-- Teams
 	--------------------------------------------------------------------------------
@@ -167,22 +186,12 @@ if gadgetHandler:IsSyncedCode() then
 	local teams = GetTeamList()
 	for _, teamID in ipairs(teams) do
 		local teamLuaAI = GetTeamLuaAI(teamID)
-		if (teamLuaAI and string.find(teamLuaAI, "Raptors")) then
-			raptorTeamID = teamID
-			raptorAllyTeamID = select(6, Spring.GetTeamInfo(raptorTeamID))
-			--computerTeams[teamID] = true
-		else
+		if teamID ~= raptorTeamID then
 			humanTeams[teamID] = true
 		end
 	end
 
 	local gaiaTeamID = GetGaiaTeamID()
-	if not raptorTeamID then
-		raptorTeamID = gaiaTeamID
-		raptorAllyTeamID = select(6, Spring.GetTeamInfo(raptorTeamID))
-	else
-		--computerTeams[gaiaTeamID] = nil
-	end
 
 	humanTeams[gaiaTeamID] = nil
 
@@ -190,7 +199,7 @@ if gadgetHandler:IsSyncedCode() then
 		local players = Spring.GetPlayerList()
 		for i = 1,#players do
 			local player = players[i]
-			local name, active, spectator, teamID, allyTeamID = Spring.GetPlayerInfo(player)
+			local name, active, spectator, teamID, allyTeamID = Spring.GetPlayerInfo(player, false)
 			if allyTeamID == raptorAllyTeamID and (not spectator) then
 				Spring.AssignPlayerToTeam(player, raptorTeamID)
 				local units = GetTeamUnits(teamID)
@@ -204,7 +213,7 @@ if gadgetHandler:IsSyncedCode() then
 
 		local raptorAllies = Spring.GetTeamList(raptorAllyTeamID)
 		for i = 1,#raptorAllies do
-			local _,_,_,AI = Spring.GetTeamInfo(raptorAllies[i])
+			local _,_,_,AI = Spring.GetTeamInfo(raptorAllies[i], false)
 			local LuaAI = Spring.GetTeamLuaAI(raptorAllies[i])
 			if (AI or LuaAI) and raptorAllies[i] ~= raptorTeamID then
 				local units = GetTeamUnits(raptorAllies[i])
@@ -311,12 +320,9 @@ if gadgetHandler:IsSyncedCode() then
 	--
 	-- Difficulty
     --
-
-	local maxBurrows = ((config.maxBurrows*(1-config.raptorPerPlayerMultiplier))+(config.maxBurrows*config.raptorPerPlayerMultiplier)*SetCount(humanTeams))*config.raptorSpawnMultiplier
+	config.gracePeriodInitial = config.gracePeriod + 0
+	local maxBurrows = ((config.maxBurrows*(1-config.raptorPerPlayerMultiplier))+(config.maxBurrows*config.raptorPerPlayerMultiplier)*(math.min(SetCount(humanTeams), 8)))*config.raptorSpawnMultiplier
 	local queenTime = (config.queenTime + config.gracePeriod)
-	if config.difficulty == config.difficulties.survival then
-		queenTime = math.ceil(queenTime*0.5)
-	end
 	local maxWaveSize = ((config.maxRaptors*(1-config.raptorPerPlayerMultiplier))+(config.maxRaptors*config.raptorPerPlayerMultiplier)*SetCount(humanTeams))*config.raptorSpawnMultiplier
 	local minWaveSize = ((config.minRaptors*(1-config.raptorPerPlayerMultiplier))+(config.minRaptors*config.raptorPerPlayerMultiplier)*SetCount(humanTeams))*config.raptorSpawnMultiplier
 	local currentMaxWaveSize = minWaveSize
@@ -330,8 +336,14 @@ if gadgetHandler:IsSyncedCode() then
 		playerAggression = 0
 		queenAngerAggressionLevel = 0
 		pastFirstQueen = true
-		SetGameRulesParam("raptorQueenAnger", queenAnger)
-		SetGameRulesParam("raptorTechAnger", techAnger)
+		nSpawnedQueens = 0
+		nKilledQueens = 0
+		queenResistance = {}
+		aliveBossesMaxHealth = 0
+		bosses.resistances = queenResistance
+		bosses.statuses = {}
+		SetGameRulesParam("raptorQueenAnger", math.floor(queenAnger))
+		SetGameRulesParam("raptorTechAnger", math.floor(techAnger))
 		local nextDifficulty
 		difficultyCounter = difficultyCounter + 1
 		endlessLoopCounter = endlessLoopCounter + 1
@@ -358,10 +370,10 @@ if gadgetHandler:IsSyncedCode() then
 		config.maxBurrows = nextDifficulty.maxBurrows
 		config.maxXP = nextDifficulty.maxXP
 		config.angerBonus = nextDifficulty.angerBonus
-		config.queenTime = math.ceil(nextDifficulty.queenTime/endlessLoopCounter)
+		config.queenTime = math.ceil(nextDifficulty.queenTime/(endlessLoopCounter/2))
 
 		queenTime = (config.queenTime + config.gracePeriod)
-		maxBurrows = ((config.maxBurrows*(1-config.raptorPerPlayerMultiplier))+(config.maxBurrows*config.raptorPerPlayerMultiplier)*SetCount(humanTeams))*config.raptorSpawnMultiplier
+		maxBurrows = ((config.maxBurrows*(1-config.raptorPerPlayerMultiplier))+(config.maxBurrows*config.raptorPerPlayerMultiplier)*(math.min(SetCount(humanTeams), 8)))*config.raptorSpawnMultiplier
 		maxWaveSize = ((config.maxRaptors*(1-config.raptorPerPlayerMultiplier))+(config.maxRaptors*config.raptorPerPlayerMultiplier)*SetCount(humanTeams))*config.raptorSpawnMultiplier
 		minWaveSize = ((config.minRaptors*(1-config.raptorPerPlayerMultiplier))+(config.minRaptors*config.raptorPerPlayerMultiplier)*SetCount(humanTeams))*config.raptorSpawnMultiplier
 		config.raptorSpawnRate = nextDifficulty.raptorSpawnRate
@@ -376,9 +388,8 @@ if gadgetHandler:IsSyncedCode() then
 	--
 
 	SetGameRulesParam("raptorQueenTime", queenTime)
-	SetGameRulesParam("raptorQueenHealth", queenLifePercent)
-	SetGameRulesParam("raptorQueenAnger", queenAnger)
-	SetGameRulesParam("raptorTechAnger", techAnger)
+	SetGameRulesParam("raptorQueenAnger", math.floor(queenAnger))
+	SetGameRulesParam("raptorTechAnger", math.floor(techAnger))
 	SetGameRulesParam("raptorGracePeriod", config.gracePeriod)
 	SetGameRulesParam("raptorDifficulty", config.difficulty)
 	SetGameRulesParam("RaptorQueenAngerGain_Base", 100/config.queenTime)
@@ -397,7 +408,7 @@ if gadgetHandler:IsSyncedCode() then
 	--
 
 	local positionCheckLibrary = VFS.Include("luarules/utilities/damgam_lib/position_checks.lua")
-	local RaptorStartboxXMin, RaptorStartboxZMin, RaptorStartboxXMax, RaptorStartboxZMax = Spring.GetAllyTeamStartBox(raptorAllyTeamID)
+	local RaptorStartboxXMin, RaptorStartboxZMin, RaptorStartboxXMax, RaptorStartboxZMax = EnemyLib.GetAdjustedStartBox(raptorAllyTeamID, config.burrowSize*1.5*spawnAreaMultiplier)
 
 	--[[
 
@@ -429,9 +440,13 @@ if gadgetHandler:IsSyncedCode() then
 
 			if squadsTable[i].squadLife <= 0 then
 				-- Spring.Echo("Life is 0, time to do some killing")
-				if SetCount(squadsTable[i].squadUnits) > 0 then
-					if squadsTable[i].squadBurrow and (not queenID) then
-						Spring.DestroyUnit(squadsTable[i].squadBurrow, true, false)
+				if SetCount(squadsTable[i].squadUnits) > 0 and SetCount(burrows) > 2 then
+					if squadsTable[i].squadBurrow and nSpawnedQueens == 0 then
+						if Spring.GetUnitTeam(squadsTable[i].squadBurrow) == raptorTeamID then
+							Spring.DestroyUnit(squadsTable[i].squadBurrow, true, false)
+						elseif Spring.GetUnitIsDead(squadsTable[i].squadBurrow) == false then
+							squadsTable[i].squadBurrow = nil
+						end
 					end
 					-- Spring.Echo("There are some units to kill, so let's kill them")
 					-- Spring.Echo("----------------------------------------------------------------------------------------------------------------------------")
@@ -444,7 +459,9 @@ if gadgetHandler:IsSyncedCode() then
 					end
 					for j = 1,#destroyQueue do
 						-- Spring.Echo("Destroying Unit. ID: ".. unitID .. ", Name:" .. UnitDefs[Spring.GetUnitDefID(unitID)].name)
-						Spring.DestroyUnit(destroyQueue[j], true, false)
+						if Spring.GetUnitTeam(destroyQueue[j]) == raptorTeamID then
+							Spring.DestroyUnit(destroyQueue[j], true, false)
+						end
 					end
 					destroyQueue = nil
 					-- Spring.Echo("----------------------------------------------------------------------------------------------------------------------------")
@@ -621,6 +638,9 @@ if gadgetHandler:IsSyncedCode() then
 
 
 	function getRaptorSpawnLoc(burrowID, size)
+		if not burrowID then
+			return false
+		end
 		local x, y, z
 		local bx, by, bz = GetUnitPosition(burrowID)
 		if not bx or not bz then
@@ -659,15 +679,17 @@ if gadgetHandler:IsSyncedCode() then
 		local squadCounter = 0
 		if raptorType then
 			if not count then count = 1 end
-			squad = { count .. " " .. raptorType }
-			for i, sString in pairs(squad) do
-				local nEnd, _ = string.find(sString, " ")
-				local unitNumber = mRandom(1, string.sub(sString, 1, (nEnd - 1)))
-				local raptorName = string.sub(sString, (nEnd + 1))
-				for j = 1, unitNumber, 1 do
-					squadCounter = squadCounter + 1
-					table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+			if UnitDefNames[raptorType] then
+				for j = 1, count, 1 do
+					if mRandom() <= config.spawnChance or j == 1 then
+						squadCounter = squadCounter + 1
+						table.insert(spawnQueue, { burrow = burrowID, unitName = raptorType, team = raptorTeamID, squadID = squadCounter })
+					end
 				end
+			elseif not UnitDefNames[raptorType] then
+				Spring.Echo("[ERROR] Invalid Raptor Unit Name", raptorType)
+			else
+				Spring.Echo("[ERROR] Invalid Raptor Squad", raptorType)
 			end
 		else
 			squadCounter = 0
@@ -690,13 +712,20 @@ if gadgetHandler:IsSyncedCode() then
 				end
 			end
 			if squad then
-				for i, sString in pairs(squad.units) do
-					local nEnd, _ = string.find(sString, " ")
-					local unitNumber = mRandom(1, string.sub(sString, 1, (nEnd - 1)))
-					local raptorName = string.sub(sString, (nEnd + 1))
-					for j = 1, unitNumber, 1 do
-						squadCounter = squadCounter + 1
-						table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+				for _, squadTable in pairs(squad.units) do
+					local unitNumber = squadTable.count
+					local raptorName = squadTable.unit
+					if UnitDefNames[raptorName] and unitNumber and unitNumber > 0 then
+						for j = 1, unitNumber, 1 do
+							if mRandom() <= config.spawnChance or j == 1 then
+								squadCounter = squadCounter + 1
+								table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+							end
+						end
+					elseif not UnitDefNames[raptorName] then
+						Spring.Echo("[ERROR] Invalid Raptor Unit Name", raptorName)
+					else
+						Spring.Echo("[ERROR] Invalid Raptor Squad", raptorName)
 					end
 				end
 			end
@@ -711,6 +740,7 @@ if gadgetHandler:IsSyncedCode() then
 	end
 
 	function SpawnBurrow(number)
+		local foundLocation = false
 		tracy.ZoneBeginN("Raptors:SpawnBurrow")
 		for i = 1, (number or 1) do
 			local canSpawnBurrow = false
@@ -718,34 +748,37 @@ if gadgetHandler:IsSyncedCode() then
 			local spawnPosX, spawnPosY, spawnPosZ
 
 			if config.useScum then -- Attempt #1, find position in creep/scum (skipped if creep is disabled or alwaysbox is enabled)
-				for _ = 1,100 do
-					spawnPosX = mRandom(spread, MAPSIZEX - spread)
-					spawnPosZ = mRandom(spread, MAPSIZEZ - spread)
-					spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
-					canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
-					if canSpawnBurrow then
-						canSpawnBurrow = positionCheckLibrary.OccupancyCheck(spawnPosX, spawnPosY, spawnPosZ, spread)
-					end
-					if canSpawnBurrow then
-						canSpawnBurrow = GG.IsPosInRaptorScum(spawnPosX, spawnPosY, spawnPosZ)
-					end
-					if canSpawnBurrow then
-						break
+				if spread < MAPSIZEX - spread and spread < MAPSIZEZ - spread then
+					for _ = 1,100 do
+						spawnPosX = mRandom(spread, MAPSIZEX - spread)
+						spawnPosZ = mRandom(spread, MAPSIZEZ - spread)
+						spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
+						canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
+						if canSpawnBurrow then
+							canSpawnBurrow = positionCheckLibrary.OccupancyCheck(spawnPosX, spawnPosY, spawnPosZ, spread)
+						end
+						if canSpawnBurrow then
+							canSpawnBurrow = GG.IsPosInRaptorScum(spawnPosX, spawnPosY, spawnPosZ)
+						end
+						if canSpawnBurrow then
+							break
+						end
 					end
 				end
 			end
 
 			if (not canSpawnBurrow) and config.burrowSpawnType ~= "avoid" then -- Attempt #2 Force spawn in Startbox, ignore any kind of player vision
+				local spreadStartBox = math.clamp(spread, 0, 0.5 * math.min(RaptorStartboxXMax - RaptorStartboxXMin, RaptorStartboxZMax - RaptorStartboxZMin))
 				for _ = 1,100 do
-					spawnPosX = mRandom(RaptorStartboxXMin + spread, RaptorStartboxXMax - spread)
-					spawnPosZ = mRandom(RaptorStartboxZMin + spread, RaptorStartboxZMax - spread)
+					spawnPosX = mRandom(RaptorStartboxXMin + spreadStartBox, RaptorStartboxXMax - spreadStartBox)
+					spawnPosZ = mRandom(RaptorStartboxZMin + spreadStartBox, RaptorStartboxZMax - spreadStartBox)
 					spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
-					canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
+					canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spreadStartBox, 30, true)
 					if canSpawnBurrow then
-						canSpawnBurrow = positionCheckLibrary.OccupancyCheck(spawnPosX, spawnPosY, spawnPosZ, spread)
+						canSpawnBurrow = positionCheckLibrary.OccupancyCheck(spawnPosX, spawnPosY, spawnPosZ, spreadStartBox)
 					end
 					if canSpawnBurrow and noRaptorStartbox then -- this is for case where they have no startbox. We don't want them spawning on top of your stuff.
-						canSpawnBurrow = positionCheckLibrary.VisibilityCheckEnemy(spawnPosX, spawnPosY, spawnPosZ, spread, raptorAllyTeamID, true, true, true)
+						canSpawnBurrow = positionCheckLibrary.VisibilityCheckEnemy(spawnPosX, spawnPosY, spawnPosZ, spreadStartBox, raptorAllyTeamID, true, true, true)
 					end
 					if canSpawnBurrow then
 						break
@@ -753,10 +786,18 @@ if gadgetHandler:IsSyncedCode() then
 				end
 			end
 
+			-- Ensure a good outline of the Spawnbox (not Startbox)
+			local spawnMinX = lsx1 + spread
+			local spawnMaxX = lsx2 - spread
+			local spawnMinZ = lsz1 + spread
+			local spawnMaxZ = lsz2 - spread
+			spawnMinX, spawnMaxX = math.min(spawnMinX, spawnMaxX), math.max(spawnMinX, spawnMaxX)
+			spawnMinZ, spawnMaxZ = math.min(spawnMinZ, spawnMaxZ), math.max(spawnMinZ, spawnMaxZ)
+
 			if (not canSpawnBurrow) then -- Attempt #3 Find some good position in Spawnbox (not Startbox)
 				for _ = 1,100 do
-					spawnPosX = mRandom(lsx1 + spread, lsx2 - spread)
-					spawnPosZ = mRandom(lsz1 + spread, lsz2 - spread)
+					spawnPosX = mRandom(spawnMinX, spawnMaxX)
+					spawnPosZ = mRandom(spawnMinZ, spawnMaxZ)
 					spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
 					canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
 					if canSpawnBurrow then
@@ -777,8 +818,8 @@ if gadgetHandler:IsSyncedCode() then
 			if config.burrowSpawnType == "avoid" then -- Last Resort for Avoid Players burrow setup. Spawns anywhere that isn't in player sensor range
 
 				for _ = 1,100 do -- Attempt #1 Avoid all sensors
-					spawnPosX = mRandom(lsx1 + spread, lsx2 - spread)
-					spawnPosZ = mRandom(lsz1 + spread, lsz2 - spread)
+					spawnPosX = mRandom(spawnMinX, spawnMaxX)
+					spawnPosZ = mRandom(spawnMinZ, spawnMaxZ)
 					spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
 					canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
 					if canSpawnBurrow then
@@ -794,8 +835,8 @@ if gadgetHandler:IsSyncedCode() then
 
 				if (not canSpawnBurrow) then -- Attempt #2 Don't avoid radars
 					for _ = 1,100 do
-						spawnPosX = mRandom(lsx1 + spread, lsx2 - spread)
-						spawnPosZ = mRandom(lsz1 + spread, lsz2 - spread)
+						spawnPosX = mRandom(spawnMinX, spawnMaxX)
+						spawnPosZ = mRandom(spawnMinZ, spawnMaxZ)
 						spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
 						canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
 						if canSpawnBurrow then
@@ -812,8 +853,8 @@ if gadgetHandler:IsSyncedCode() then
 
 				if (not canSpawnBurrow) then -- Attempt #3 Only avoid LoS
 					for _ = 1,100 do
-						spawnPosX = mRandom(lsx1 + spread, lsx2 - spread)
-						spawnPosZ = mRandom(lsz1 + spread, lsz2 - spread)
+						spawnPosX = mRandom(spawnMinX, spawnMaxX)
+						spawnPosZ = mRandom(spawnMinZ, spawnMaxZ)
 						spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
 						canSpawnBurrow = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true)
 						if canSpawnBurrow then
@@ -828,12 +869,12 @@ if gadgetHandler:IsSyncedCode() then
 					end
 				end
 			end
-
-			if (canSpawnBurrow and GetGameSeconds() < config.gracePeriod) or (canSpawnBurrow and config.burrowSpawnType == "avoid") then -- Don't spawn new burrows in existing creep during grace period - Force them to spread as much as they can..... AT LEAST THAT'S HOW IT'S SUPPOSED TO WORK, lol.
+			if (canSpawnBurrow and GetGameSeconds() < config.gracePeriodInitial*0.9) or (canSpawnBurrow and config.burrowSpawnType == "avoid") then -- Don't spawn new burrows in existing creep during grace period - Force them to spread as much as they can..... AT LEAST THAT'S HOW IT'S SUPPOSED TO WORK, lol.
 				canSpawnBurrow = not GG.IsPosInRaptorScum(spawnPosX, spawnPosY, spawnPosZ)
 			end
 
 			if canSpawnBurrow then
+				foundLocation = true
 				local burrowID = CreateUnit(config.burrowName, spawnPosX, spawnPosY, spawnPosZ, mRandom(0,3), raptorTeamID)
 				if burrowID then
 					SetupBurrow(burrowID, spawnPosX, spawnPosY, spawnPosZ)
@@ -844,21 +885,29 @@ if gadgetHandler:IsSyncedCode() then
 			end
 		end
 		tracy.ZoneEnd()
+		return foundLocation
 	end
 
-	function updateQueenLife()
-		if not queenID then
-			SetGameRulesParam("raptorQueenHealth", 0)
-			return
+	function updateQueenHealth()
+		local totalHealth = 0
+		local totalMaxHealth = 0
+		aliveBossesMaxHealth = 0
+		for bossID, status in pairs(bosses.statuses) do
+			if status.isDead then
+				totalMaxHealth = totalMaxHealth + status.maxHealth
+			else
+				local health, maxHealth = GetUnitHealth(bossID)
+				table.mergeInPlace(status, {health = health, maxHealth = maxHealth})
+
+				totalHealth = totalHealth + health
+				aliveBossesMaxHealth = aliveBossesMaxHealth + maxHealth
+				totalMaxHealth = totalMaxHealth + maxHealth
+			end
 		end
-		local curH, maxH = GetUnitHealth(queenID)
-		local lifeCheck = math.ceil(((curH / maxH) * 100) - 0.5)
-		if queenLifePercent ~= lifeCheck then
-			-- health changed since last update, update it
-			queenLifePercent = lifeCheck
-			SetGameRulesParam("raptorQueenHealth", queenLifePercent)
+
+		SetGameRulesParam("raptorQueenHealth", math.floor(0.5 + ((totalHealth / totalMaxHealth) * 100)))
+		SetGameRulesParam("pveBossInfo", Json.encode(bosses))
 		end
-	end
 
 	function SpawnQueen()
 		local bestScore = 0
@@ -867,7 +916,7 @@ if gadgetHandler:IsSyncedCode() then
 		for burrowID, _ in pairs(burrows) do
 			-- Try to spawn the queen at the 'best' burrow
 			local x, y, z = GetUnitPosition(burrowID)
-			if x and y and z then
+			if x and y and z and not queenIDs[burrowID] then
 				local score = 0
 				score = mRandom(1,1000)
 				if score > bestScore then
@@ -1094,15 +1143,22 @@ if gadgetHandler:IsSyncedCode() then
 						end
 					end
 					if squad then
-						for i, sString in pairs(squad.units) do
-							local nEnd, _ = string.find(sString, " ")
-							local unitNumber = mRandom(1, string.sub(sString, 1, (nEnd - 1)))
-							local raptorName = string.sub(sString, (nEnd + 1))
-							for j = 1, unitNumber, 1 do
-								squadCounter = squadCounter + 1
-								table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+						for _, squadTable in pairs(squad.units) do
+							local unitNumber = squadTable.count
+							local raptorName = squadTable.unit
+							if UnitDefNames[raptorName] and unitNumber and unitNumber > 0 then
+								for j = 1, unitNumber, 1 do
+									if mRandom() <= config.spawnChance or j == 1 then
+										squadCounter = squadCounter + 1
+										table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+										cCount = cCount + 1
+									end
+								end
+							elseif not UnitDefNames[raptorName] then
+								Spring.Echo("[ERROR] Invalid Raptor Unit Name", raptorName)
+							else
+								Spring.Echo("[ERROR] Invalid Raptor Squad", raptorName)
 							end
-							cCount = cCount + unitNumber
 						end
 					end
 					if loopCounter <= 1 then
@@ -1116,15 +1172,22 @@ if gadgetHandler:IsSyncedCode() then
 							end
 						end
 						if squad then
-							for i, sString in pairs(squad.units) do
-								local nEnd, _ = string.find(sString, " ")
-								local unitNumber = mRandom(1, string.sub(sString, 1, (nEnd - 1)))
-								local raptorName = string.sub(sString, (nEnd + 1))
-								for j = 1, unitNumber, 1 do
-									squadCounter = squadCounter + 1
-									table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+							for _, squadTable in pairs(squad.units) do
+								local unitNumber = squadTable.count
+								local raptorName = squadTable.unit
+								if UnitDefNames[raptorName] and unitNumber and unitNumber > 0 then
+									for j = 1, unitNumber, 1 do
+										if mRandom() <= config.spawnChance or j == 1 then
+											squadCounter = squadCounter + 1
+											table.insert(spawnQueue, { burrow = burrowID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+											cCount = cCount + 1
+										end
+									end
+								elseif not UnitDefNames[raptorName] then
+									Spring.Echo("[ERROR] Invalid Raptor Unit Name", raptorName)
+								else
+									Spring.Echo("[ERROR] Invalid Raptor Squad", raptorName)
 								end
-								cCount = cCount + unitNumber
 							end
 						end
 					end
@@ -1148,23 +1211,25 @@ if gadgetHandler:IsSyncedCode() then
 		local spawnPosX, spawnPosY, spawnPosZ
 
 		if config.useScum then -- If creep/scum is enabled, only allow to spawn turrets on the creep
-			local flatCheck, occupancyCheck, scumCheck = 0,0,0
-			for _ = 1,5 do
-				spawnPosX = mRandom(spread, MAPSIZEX - spread)
-				spawnPosZ = mRandom(spread, MAPSIZEZ - spread)
-				spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
-				canSpawnStructure = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true) -- 90% of map should be flat
-				flatCheck = flatCheck + 1
-				if canSpawnStructure then
-					canSpawnStructure = positionCheckLibrary.OccupancyCheck(spawnPosX, spawnPosY, spawnPosZ, spread) -- spread about 96 is suspicious, Probably this fails the most ofte
-					occupancyCheck = occupancyCheck + 1
-				end
-				if canSpawnStructure then
-					canSpawnStructure = GG.IsPosInRaptorScum(spawnPosX, spawnPosY, spawnPosZ) -- this is a func of creep coverage, assume ~50 % of map covered
-					scumCheck = scumCheck + 1
-				end
-				if canSpawnStructure then
-					break
+			if spread < MAPSIZEX - spread and spread < MAPSIZEZ - spread then
+				local flatCheck, occupancyCheck, scumCheck = 0,0,0
+				for _ = 1,5 do
+					spawnPosX = mRandom(spread, MAPSIZEX - spread)
+					spawnPosZ = mRandom(spread, MAPSIZEZ - spread)
+					spawnPosY = Spring.GetGroundHeight(spawnPosX, spawnPosZ)
+					canSpawnStructure = positionCheckLibrary.FlatAreaCheck(spawnPosX, spawnPosY, spawnPosZ, spread, 30, true) -- 90% of map should be flat
+					flatCheck = flatCheck + 1
+					if canSpawnStructure then
+						canSpawnStructure = positionCheckLibrary.OccupancyCheck(spawnPosX, spawnPosY, spawnPosZ, spread) -- spread about 96 is suspicious, Probably this fails the most ofte
+						occupancyCheck = occupancyCheck + 1
+					end
+					if canSpawnStructure then
+						canSpawnStructure = GG.IsPosInRaptorScum(spawnPosX, spawnPosY, spawnPosZ) -- this is a func of creep coverage, assume ~50 % of map covered
+						scumCheck = scumCheck + 1
+					end
+					if canSpawnStructure then
+						break
+					end
 				end
 			end
 			if tracy then
@@ -1198,7 +1263,7 @@ if gadgetHandler:IsSyncedCode() then
 				SetUnitBlocking(structureUnitID, false, false)
 				tracy.ZoneEnd()
 				return structureUnitID, spawnPosX, spawnPosY, spawnPosZ
-			else 
+			else
 				if tracy then
 					tracy.Message(string.format("spawnCreepStructure: Failed to spawn %s at %d*%d*%d ", unitDefName, spawnPosX, spawnPosY, spawnPosZ ))
 				end
@@ -1212,8 +1277,8 @@ if gadgetHandler:IsSyncedCode() then
 		for uName, uSettings in pairs(config.raptorTurrets) do
 			if not uSettings.maxQueenAnger then uSettings.maxQueenAnger = uSettings.minQueenAnger + 100 end
 			if uSettings.minQueenAnger <= techAnger and uSettings.maxQueenAnger >= techAnger then
-				local numOfTurrets = (uSettings.spawnedPerWave*(1-config.raptorPerPlayerMultiplier))+(uSettings.spawnedPerWave*config.raptorPerPlayerMultiplier)*SetCount(humanTeams)
-				local maxExisting = (uSettings.maxExisting*(1-config.raptorPerPlayerMultiplier))+(uSettings.maxExisting*config.raptorPerPlayerMultiplier)*SetCount(humanTeams)
+				local numOfTurrets = (uSettings.spawnedPerWave*(1-config.raptorPerPlayerMultiplier))+(uSettings.spawnedPerWave*config.raptorPerPlayerMultiplier)*(math.min(SetCount(humanTeams), 8))
+				local maxExisting = (uSettings.maxExisting*(1-config.raptorPerPlayerMultiplier))+(uSettings.maxExisting*config.raptorPerPlayerMultiplier)*(math.min(SetCount(humanTeams), 8))
 				local maxAllowedToSpawn
 				if techAnger <= 100 then  -- i don't know how this works but it does. scales maximum amount of turrets allowed to spawn with techAnger.
 					maxAllowedToSpawn = math.ceil(maxExisting*((techAnger-uSettings.minQueenAnger)/(math.min(100-uSettings.minQueenAnger, uSettings.maxQueenAnger-uSettings.minQueenAnger))))
@@ -1222,10 +1287,10 @@ if gadgetHandler:IsSyncedCode() then
 				end
 				--Spring.Echo(uName,"MaxExisting",maxExisting,"MaxAllowed",maxAllowedToSpawn)
 				local currentCountOfTurretDef = Spring.GetTeamUnitDefCount(raptorTeamID, UnitDefNames[uName].id)
-				
+
 				if currentCountOfTurretDef < UnitDefNames[uName].maxThisUnit then  -- cause nutty raptors sets maxThisUnit which results in nil returns from Spring.CreateUnit!
 					for i = 1, math.ceil(numOfTurrets) do
-						if mRandom() < config.spawnChance*math.min((GetGameSeconds()/config.gracePeriod),1) and (currentCountOfTurretDef <= maxAllowedToSpawn) then
+						if mRandom() < config.spawnChance*math.min((GetGameSeconds()/config.gracePeriodInitial),1) and (currentCountOfTurretDef <= maxAllowedToSpawn) then
 							if i <= numOfTurrets or math.random() <= numOfTurrets%1 then
 								local attempts = 0
 								local footprintX = UnitDefNames[uName].xsize -- why the fuck is this footprint *2??????
@@ -1264,15 +1329,6 @@ if gadgetHandler:IsSyncedCode() then
 	-- Call-ins
 	--------------------------------------------------------------------------------
 
-	local WALLS = {
-		"armdrag",
-		"armfort",
-		"cordrag",
-		"corfort",
-		"scavdrag",
-		"scavfort",
-	}
-
 	function gadget:UnitCreated(unitID, unitDefID, unitTeam)
 
 		local unitDef = UnitDefs[unitDefID]
@@ -1291,10 +1347,8 @@ if gadgetHandler:IsSyncedCode() then
 		end
 
 		-- If a wall
-		for _, wallName in pairs(WALLS) do
-			if unitDef.name == wallName then
-				return
-			end
+		if isObject[unitDefID] then
+			return
 		end
 
 		if not unitDef.canMove or (unitDef.customParams and unitDef.customParams.iscommander) then
@@ -1374,20 +1428,22 @@ if gadgetHandler:IsSyncedCode() then
 			damage = (damage * heroRaptor[unitID])
 		end
 
-		if unitID == queenID then -- Queen Resistance
+		if queenIDs[unitID] then -- Queen Resistance
 			if attackerDefID then
 				if weaponID == -1 and damage > 1 then
 					damage = 1
 				end
+				attackerDefID = tostring(attackerDefID)
 				if not queenResistance[attackerDefID] then
-					queenResistance[attackerDefID] = {}
-					queenResistance[attackerDefID].damage = (damage * 4 * config.queenResistanceMult)
-					queenResistance[attackerDefID].notify = 0
+					queenResistance[attackerDefID] = {
+						damage = damage * 4 * config.queenResistanceMult,
+						notify = 0
+					}
 				end
-				local resistPercent = math.min((queenResistance[attackerDefID].damage) / queenMaxHP, 0.95)
+				local resistPercent = math.min((queenResistance[attackerDefID].damage) / aliveBossesMaxHealth, 0.95)
 				if resistPercent > 0.5 then
 					if queenResistance[attackerDefID].notify == 0 then
-						raptorEvent("queenResistance", attackerDefID)
+						raptorEvent("queenResistance", tonumber(attackerDefID))
 						queenResistance[attackerDefID].notify = 1
 						if mRandom() < config.spawnChance then
 							local squad
@@ -1400,28 +1456,36 @@ if gadgetHandler:IsSyncedCode() then
 								end
 							end
 							if squad then
-								for i, sString in pairs(squad.units) do
-									local nEnd, _ = string.find(sString, " ")
-									local unitNumber = mRandom(1, string.sub(sString, 1, (nEnd - 1)))
-									local raptorName = string.sub(sString, (nEnd + 1))
-									for j = 1, unitNumber, 1 do
-										squadCounter = squadCounter + 1
-										table.insert(spawnQueue, { burrow = queenID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+								for _, squadTable in pairs(squad.units) do
+									local unitNumber = squadTable.count
+									local raptorName = squadTable.unit
+									if UnitDefNames[raptorName] and unitNumber and unitNumber > 0 then
+										for j = 1, unitNumber, 1 do
+											if mRandom() <= config.spawnChance or j == 1 then
+												squadCounter = squadCounter + 1
+												table.insert(spawnQueue, { burrow = unitID, unitName = raptorName, team = raptorTeamID, squadID = squadCounter })
+											end
+										end
+									elseif not UnitDefNames[raptorName] then
+										Spring.Echo("[ERROR] Invalid Raptor Unit Name", raptorName)
+									else
+										Spring.Echo("[ERROR] Invalid Raptor Squad", raptorName)
 									end
 								end
 							end
 						end
 						for _ = 1,SetCount(humanTeams) do
 							if mRandom() < config.spawnChance then
-								SpawnMinions(queenID, Spring.GetUnitDefID(queenID))
+								SpawnMinions(unitID, Spring.GetUnitDefID(unitID))
 							end
 						end
 						spawnCreepStructuresWave()
 					end
-					damage = damage - (damage * resistPercent)
 
 				end
+				damage = damage - (damage * resistPercent)
 				queenResistance[attackerDefID].damage = queenResistance[attackerDefID].damage + (damage * 4 * config.queenResistanceMult)
+				queenResistance[attackerDefID].percent = resistPercent
 			else
 				damage = 1
 			end
@@ -1438,10 +1502,10 @@ if gadgetHandler:IsSyncedCode() then
 				local angle = math.atan2(ux - x, uz - z)
 				local distance = mRandom(math.ceil(config.raptorBehaviours.SKIRMISH[attackerDefID].distance*0.75), math.floor(config.raptorBehaviours.SKIRMISH[attackerDefID].distance*1.25))
 				if config.raptorBehaviours.SKIRMISH[attackerDefID].teleport and (unitTeleportCooldown[attackerID] or 1) < Spring.GetGameFrame() and positionCheckLibrary.FlatAreaCheck(x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance), 64, 30, false) and positionCheckLibrary.MapEdgeCheck(x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance), 64) then
-					Spring.SpawnCEG("scav-spawnexplo", x, y, z, 0,0,0)
+					GG.ScavengersSpawnEffectUnitDefID(attackerDefID, x, y, z)
 					Spring.SetUnitPosition(attackerID, x - (math.sin(angle) * distance), z - (math.cos(angle) * distance))
 					Spring.GiveOrderToUnit(attackerID, CMD.STOP, 0, 0)
-					Spring.SpawnCEG("scav-spawnexplo", x - (math.sin(angle) * distance), y ,z - (math.cos(angle) * distance), 0,0,0)
+					GG.ScavengersSpawnEffectUnitDefID(attackerDefID, x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance))
 					unitTeleportCooldown[attackerID] = Spring.GetGameFrame() + config.raptorBehaviours.SKIRMISH[attackerDefID].teleportcooldown*30
 				else
 					Spring.GiveOrderToUnit(attackerID, CMD.MOVE, { x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance)}, {})
@@ -1457,10 +1521,10 @@ if gadgetHandler:IsSyncedCode() then
 					local angle = math.atan2(ax - x, az - z)
 					local distance = mRandom(math.ceil(config.raptorBehaviours.COWARD[unitDefID].distance*0.75), math.floor(config.raptorBehaviours.COWARD[unitDefID].distance*1.25))
 					if config.raptorBehaviours.COWARD[unitDefID].teleport and (unitTeleportCooldown[unitID] or 1) < Spring.GetGameFrame() and positionCheckLibrary.FlatAreaCheck(x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance), 64, 30, false) and positionCheckLibrary.MapEdgeCheck(x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance), 64) then
-						Spring.SpawnCEG("scav-spawnexplo", x, y, z, 0,0,0)
+						GG.ScavengersSpawnEffectUnitDefID(unitDefID, x, y, z)
 						Spring.SetUnitPosition(unitID, x - (math.sin(angle) * distance), z - (math.cos(angle) * distance))
 						Spring.GiveOrderToUnit(unitID, CMD.STOP, 0, 0)
-						Spring.SpawnCEG("scav-spawnexplo", x - (math.sin(angle) * distance), y ,z - (math.cos(angle) * distance), 0,0,0)
+						GG.ScavengersSpawnEffectUnitDefID(unitDefID, x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance))
 						unitTeleportCooldown[unitID] = Spring.GetGameFrame() + config.raptorBehaviours.COWARD[unitDefID].teleportcooldown*30
 					else
 						Spring.GiveOrderToUnit(unitID, CMD.MOVE, { x - (math.sin(angle) * distance), y, z - (math.cos(angle) * distance)}, {})
@@ -1474,12 +1538,12 @@ if gadgetHandler:IsSyncedCode() then
 			local separation = Spring.GetUnitSeparation(unitID, attackerID)
 			if ax and separation < (config.raptorBehaviours.BERSERK[unitDefID].distance or 10000) then
 				if config.raptorBehaviours.BERSERK[unitDefID].teleport and (unitTeleportCooldown[unitID] or 1) < Spring.GetGameFrame() and positionCheckLibrary.FlatAreaCheck(ax, ay, az, 128, 30, false) and positionCheckLibrary.MapEdgeCheck(ax, ay, az, 128) then
-					Spring.SpawnCEG("scav-spawnexplo", x, y, z, 0,0,0)
+					GG.ScavengersSpawnEffectUnitDefID(unitDefID, x, y, z)
 					ax = ax + mRandom(-64,64)
 					az = az + mRandom(-64,64)
 					Spring.SetUnitPosition(unitID, ax, ay, az)
 					Spring.GiveOrderToUnit(unitID, CMD.STOP, 0, 0)
-					Spring.SpawnCEG("scav-spawnexplo", ax, ay, az, 0,0,0)
+					GG.ScavengersSpawnEffectUnitDefID(attackerDefID, ax, ay, az)
 					unitTeleportCooldown[unitID] = Spring.GetGameFrame() + config.raptorBehaviours.BERSERK[unitDefID].teleportcooldown*30
 				else
 					Spring.GiveOrderToUnit(unitID, CMD.MOVE, { ax+mRandom(-64,64), ay, az+mRandom(-64,64)}, {})
@@ -1492,12 +1556,12 @@ if gadgetHandler:IsSyncedCode() then
 			local separation = Spring.GetUnitSeparation(unitID, attackerID)
 			if ax and separation < (config.raptorBehaviours.BERSERK[attackerDefID].distance or 10000) then
 				if config.raptorBehaviours.BERSERK[attackerDefID].teleport and (unitTeleportCooldown[attackerID] or 1) < Spring.GetGameFrame() and positionCheckLibrary.FlatAreaCheck(ax, ay, az, 128, 30, false) and positionCheckLibrary.MapEdgeCheck(ax, ay, az, 128) then
-					Spring.SpawnCEG("scav-spawnexplo", x, y, z, 0,0,0)
+					GG.ScavengersSpawnEffectUnitDefID(attackerDefID, x, y, z)
 					ax = ax + mRandom(-64,64)
 					az = az + mRandom(-64,64)
 					Spring.SetUnitPosition(attackerID, ax, ay, az)
 					Spring.GiveOrderToUnit(attackerID, CMD.STOP, 0, 0)
-					Spring.SpawnCEG("scav-spawnexplo", ax, ay, az, 0,0,0)
+					GG.ScavengersSpawnEffectUnitDefID(unitDefID, ax, ay, az)
 					unitTeleportCooldown[attackerID] = Spring.GetGameFrame() + config.raptorBehaviours.BERSERK[attackerDefID].teleportcooldown*30
 				else
 					Spring.GiveOrderToUnit(attackerID, CMD.MOVE, { ax+mRandom(-64,64), ay, az+mRandom(-64,64)}, {})
@@ -1505,15 +1569,18 @@ if gadgetHandler:IsSyncedCode() then
 				unitCowardCooldown[attackerID] = Spring.GetGameFrame() + 900
 			end
 		end
-		if queenID and unitID == queenID then
+		if queenIDs[unitID] then
 			local curH, maxH = GetUnitHealth(unitID)
 			if curH and maxH then
 				curH = math.max(curH, maxH*0.05)
 				local spawnChance = math.max(0, math.ceil(curH/maxH*10000))
 				if mRandom(0,spawnChance) == 1 then
-					SpawnMinions(queenID, Spring.GetUnitDefID(queenID))
-					SpawnMinions(queenID, Spring.GetUnitDefID(queenID))
+					SpawnMinions(unitID, Spring.GetUnitDefID(unitID))
+					SpawnMinions(unitID, Spring.GetUnitDefID(unitID))
 				end
+			end
+			if attackerTeam and attackerTeam ~= raptorTeamID then
+				bosses.playerDamages[tostring(attackerTeam)] = (bosses.playerDamages[tostring(attackerTeam)] or 0) + damage
 			end
 		end
 		if unitTeam == raptorTeamID or attackerTeam == raptorTeamID then
@@ -1527,10 +1594,14 @@ if gadgetHandler:IsSyncedCode() then
 	end
 
 	function gadget:GameStart()
+		gadget:SetInitialSpawnBox()
+	end
+
+	function gadget:SetInitialSpawnBox()
 		if config.burrowSpawnType == "initialbox" or config.burrowSpawnType == "alwaysbox" or config.burrowSpawnType == "initialbox_post" then
 			local _, _, _, _, _, luaAllyID = Spring.GetTeamInfo(raptorTeamID, false)
 			if luaAllyID then
-				lsx1, lsz1, lsx2, lsz2 = Spring.GetAllyTeamStartBox(luaAllyID)
+				lsx1, lsz1, lsx2, lsz2 = RaptorStartboxXMin, RaptorStartboxZMin, RaptorStartboxXMax, RaptorStartboxZMax
 				if not lsx1 or not lsz1 or not lsx2 or not lsz2 then
 					config.burrowSpawnType = "avoid"
 					Spring.Log(gadget:GetInfo().name, LOG.INFO, "No Raptor start box available, Burrow Placement set to 'Avoid Players'")
@@ -1638,18 +1709,23 @@ if gadgetHandler:IsSyncedCode() then
 	end
 
 	local function updateSpawnQueen()
-		if not queenID and not gameOver then
+		if nSpawnedQueens < nTotalQueens and not gameOver then
 			-- spawn queen if not exists
-			queenID = SpawnQueen()
+			local queenID = SpawnQueen()
 			if queenID then
-				queenSquad = table.copy(squadCreationQueueDefaults)
+				nSpawnedQueens = nSpawnedQueens + 1
+				queenIDs[queenID] = true
+				bosses.statuses[tostring(queenID)] = {}
+
+				local queenSquad = table.copy(squadCreationQueueDefaults)
 				queenSquad.life = 999999
 				queenSquad.role = "raid"
 				queenSquad.units = {queenID}
 				createSquad(queenSquad)
 				spawnQueue = {}
 				raptorEvent("queen") -- notify unsynced about queen spawn
-				_, queenMaxHP = GetUnitHealth(queenID)
+				local _, queenMaxHP = GetUnitHealth(queenID)
+				Spring.SetUnitHealth(queenID, math.max(queenMaxHP*(techAnger*0.01), queenMaxHP*0.2))
 				SetUnitExperience(queenID, 0)
 				timeOfLastWave = t
 				for burrowID, _ in pairs(burrows) do
@@ -1663,7 +1739,10 @@ if gadgetHandler:IsSyncedCode() then
 				Spring.SetGameRulesParam("BossFightStarted", 1)
 				Spring.SetUnitAlwaysVisible(queenID, true)
 			end
-		else
+			return
+		end
+
+		for queenID, _ in pairs(queenIDs) do
 			if mRandom() < config.spawnChance / 15 then
 				for i = 1,config.queenSpawnMult do
 					SpawnMinions(queenID, Spring.GetUnitDefID(queenID))
@@ -1680,6 +1759,14 @@ if gadgetHandler:IsSyncedCode() then
 			lsz1 = math.max(RaptorStartboxZMin - ((MAPSIZEZ*0.01) * techAnger), 0)
 			lsx2 = math.min(RaptorStartboxXMax + ((MAPSIZEX*0.01) * techAnger), MAPSIZEX)
 			lsz2 = math.min(RaptorStartboxZMax + ((MAPSIZEZ*0.01) * techAnger), MAPSIZEZ)
+			if not lsx2 or lsx2-lsx1 < 512 then
+				lsx1 = math.max(0, math.floor((lsx1 + lsx2) / 2) - 256)
+				lsx2 = lsx1 + 512
+			end
+			if not lsz2 or lsz2-lsz1 < 512 then
+				lsz1 = math.max(0, math.floor((lsz1 + lsz2) / 2) - 256)
+				lsz2 = lsz1 + 512
+			end
 		end
 	end
 
@@ -1744,10 +1831,33 @@ if gadgetHandler:IsSyncedCode() then
 		tracy.ZoneEnd()
 	end
 
+	function gadget:TrySpawnBurrow(t)
+		local maxSpawnRetries = math.floor((config.gracePeriodInitial-t)/spawnRetryTimeDiv)
+		local spawned = SpawnBurrow()
+		timeOfLastSpawn = t
+		if not fullySpawned then
+			local burrowCount = SetCount(burrows)
+			if burrowCount > 1 then
+				fullySpawned = true
+			elseif spawnRetries >= maxSpawnRetries or firstSpawn then
+				spawnAreaMultiplier = spawnAreaMultiplier + 1
+				RaptorStartboxXMin, RaptorStartboxZMin, RaptorStartboxXMax, RaptorStartboxZMax = EnemyLib.GetAdjustedStartBox(raptorAllyTeamID, config.burrowSize*1.5*spawnAreaMultiplier)
+				gadget:SetInitialSpawnBox()
+				spawnRetries = 0
+			else
+				spawnRetries = spawnRetries + 1
+			end
+		end
+		if firstSpawn and spawned then
+			timeOfLastWave = (config.gracePeriodInitial + 10) - config.raptorSpawnRate
+			firstSpawn = false
+		end
+	end
+
 	local announcedFirstWave = false
 	function gadget:GameFrame(n)
 
-		if announcedFirstWave == false and GetGameSeconds() > config.gracePeriod then
+		if announcedFirstWave == false and GetGameSeconds() > config.gracePeriodInitial then
 			raptorEvent("firstWave")
 			announcedFirstWave = true
 		end
@@ -1783,76 +1893,64 @@ if gadgetHandler:IsSyncedCode() then
 			playerAggression = playerAggression*0.995
 			playerAggressionLevel = math.floor(playerAggression)
 			SetGameRulesParam("raptorPlayerAggressionLevel", playerAggressionLevel)
-			if not queenID then
+			if nSpawnedQueens == 0 then
 				currentMaxWaveSize = (minWaveSize + math.ceil((techAnger*0.01)*(maxWaveSize - minWaveSize)))
 			else
 				currentMaxWaveSize = math.ceil((minWaveSize + math.ceil((techAnger*0.01)*(maxWaveSize - minWaveSize)))*(config.bossFightWaveSizeScale*0.01))
 			end
 			if pastFirstQueen or Spring.GetModOptions().raptor_graceperiodmult <= 1 then
-				techAnger = math.max(math.min((t - config.gracePeriod) / ((queenTime/(Spring.GetModOptions().raptor_queentimemult)) - config.gracePeriod) * 100, 999), 0)
+				techAnger = (t - config.gracePeriodInitial) / ((queenTime/(Spring.GetModOptions().raptor_queentimemult)) - config.gracePeriodInitial) * 100
 			else
-				techAnger = math.max(math.min((t - (config.gracePeriod/Spring.GetModOptions().raptor_graceperiodmult)) / ((queenTime/(Spring.GetModOptions().raptor_queentimemult)) - (config.gracePeriod/Spring.GetModOptions().raptor_graceperiodmult)) * 100, 999), 0)
+				techAnger = (t - (config.gracePeriodInitial/Spring.GetModOptions().raptor_graceperiodmult)) / ((queenTime/(Spring.GetModOptions().raptor_queentimemult)) - (config.gracePeriodInitial/Spring.GetModOptions().raptor_graceperiodmult)) * 100
 			end
-
+			
 			techAnger = math.ceil(techAnger*((config.economyScale*0.5)+0.5))
+			techAnger = math.clamp(techAnger, 0, 999)
 
 			if t < config.gracePeriod then
 				queenAnger = 0
-				minBurrows = 8*(t/config.gracePeriod)
+				minBurrows = math.ceil(math.max(4, 2*(math.min(SetCount(humanTeams), 8)))*(t/config.gracePeriodInitial))
 			else
-				if not queenID then
-					queenAnger = math.max(math.ceil(math.min((t - config.gracePeriod) / (queenTime - config.gracePeriod) * 100) + queenAngerAggressionLevel, 100), 0)
-					minBurrows = 8
-					if burrowCount <= 2 then
-						playerAggression = playerAggression + 1
-					end
+				if nSpawnedQueens == 0 then
+					queenAnger = math.clamp(math.ceil((t - config.gracePeriod) / (queenTime - config.gracePeriod) * 100) + queenAngerAggressionLevel, 0, 100)
+					minBurrows = 1
 				else
 					queenAnger = 100
-					minBurrows = 8
+					if Spring.GetModOptions().raptor_endless then
+						minBurrows = 4
+					else
+						minBurrows = 1
+					end
 				end
 				queenAngerAggressionLevel = queenAngerAggressionLevel + ((playerAggression*0.01)/(config.queenTime/3600)) + playerAggressionEcoValue
 				SetGameRulesParam("RaptorQueenAngerGain_Aggression", (playerAggression*0.01)/(config.queenTime/3600))
 				SetGameRulesParam("RaptorQueenAngerGain_Eco", playerAggressionEcoValue)
 			end
-			SetGameRulesParam("raptorQueenAnger", queenAnger)
-			SetGameRulesParam("raptorTechAnger", techAnger)
+			SetGameRulesParam("raptorQueenAnger", math.floor(queenAnger))
+			SetGameRulesParam("raptorTechAnger", math.floor(techAnger))
 
-			if queenAnger >= 100 then
+			if queenAnger >= 100 or (burrowCount <= 1 and t > config.gracePeriod) then
 				-- check if the queen should be alive
 				updateSpawnQueen()
-				updateQueenLife()
 			end
+			updateQueenHealth()
 
-			
 			if burrowCount < minBurrows then
-				SpawnBurrow()
-				timeOfLastSpawn = t
-				if firstSpawn then
-					timeOfLastWave = (config.gracePeriod + 10) - config.raptorSpawnRate
-					firstSpawn = false
-				end
+				gadget:TrySpawnBurrow(t)
 			end
 
 			if (t > config.burrowSpawnRate and burrowCount < minBurrows and (t > timeOfLastSpawn + 10 or burrowCount == 0)) or (config.burrowSpawnRate < t - timeOfLastSpawn and burrowCount < maxBurrows) then
-				if (config.burrowSpawnType == "initialbox") and (t > config.gracePeriod) then
+				if (config.burrowSpawnType == "initialbox") and (t > config.gracePeriodInitial) then
 					config.burrowSpawnType = "initialbox_post"
 				end
-				if firstSpawn then
-					SpawnBurrow()
-					timeOfLastWave = (config.gracePeriod + 10) - config.raptorSpawnRate
-					timeOfLastSpawn = t
-					firstSpawn = false
-				else
-					SpawnBurrow()
-					timeOfLastSpawn = t
-				end
+				gadget:TrySpawnBurrow(t)
 				raptorEvent("burrowSpawn")
 				SetGameRulesParam("raptor_hiveCount", SetCount(burrows))
 			elseif config.burrowSpawnRate < t - timeOfLastSpawn and burrowCount >= maxBurrows then
 				timeOfLastSpawn = t
 			end
 
-			if t > config.gracePeriod+5 then
+			if t > config.gracePeriodInitial+5 then
 				if burrowCount > 0
 				and SetCount(spawnQueue) == 0
 				and ((config.raptorSpawnRate*waveParameters.waveTimeMultiplier) < (t - timeOfLastWave)) then
@@ -1886,7 +1984,7 @@ if gadgetHandler:IsSyncedCode() then
 						unitCowardCooldown[raptors[i]] = nil
 						Spring.GiveOrderToUnit(raptors[i], CMD.STOP, 0, 0)
 					end
-					if Spring.GetCommandQueue(raptors[i], 0) <= 0 then
+					if Spring.GetUnitCommandCount(raptors[i]) == 0 then
 						if unitCowardCooldown[raptors[i]] then
 							unitCowardCooldown[raptors[i]] = nil
 						end
@@ -1916,7 +2014,7 @@ if gadgetHandler:IsSyncedCode() then
 	function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID)
 
 		if unitTeam == raptorTeamID then
-			if config.useEggs and (not gameIsOver) then
+			if config.useEggs then
 				local x,y,z = Spring.GetUnitPosition(unitID)
 				spawnRandomEgg(x,y,z, UnitDefs[unitDefID].name)
 			end
@@ -1935,9 +2033,16 @@ if gadgetHandler:IsSyncedCode() then
 			for index, id in ipairs(squadsTable[unitSquadTable[unitID]].squadUnits) do
 				if id == unitID then
 					table.remove(squadsTable[unitSquadTable[unitID]].squadUnits, index)
+					break
 				end
 			end
 			unitSquadTable[unitID] = nil
+		end
+
+		for index, _ in ipairs(squadsTable) do
+			if squadsTable[index].squadBurrow == unitID then
+				squadsTable[index].squadBurrow = nil
+			end
 		end
 
 		for _,unitList in pairs(squadTargetsByEcoWeight) do
@@ -1955,39 +2060,47 @@ if gadgetHandler:IsSyncedCode() then
 			SetGameRulesParam("raptor" .. "Kills", kills + 1)
 		end
 
-		if unitID == queenID then
-			-- queen destroyed
-			queenID = nil
-			queenResistance = {}
-			Spring.SetGameRulesParam("BossFightStarted", 0)
+		if queenIDs[unitID] then
+			nKilledQueens = nKilledQueens + 1
+			queenIDs[unitID] = nil
+			table.mergeInPlace(bosses.statuses, {[tostring(unitID)] = {isDead = true, health = 0}})
+			SetGameRulesParam("raptorQueensKilled", nKilledQueens)
 
-			if Spring.GetModOptions().raptor_endless then
-				updateDifficultyForSurvival()
-			else
-				gameOver = GetGameFrame() + 200
-				spawnQueue = {}
-				gameIsOver = true
+			if nKilledQueens >= nTotalQueens then
+				Spring.SetGameRulesParam("BossFightStarted", 0)
+				if Spring.GetModOptions().raptor_endless then
+					updateDifficultyForSurvival()
+					Spring.SetGameRulesParam("raptorQueenAnger", 0)
+					Spring.SetGameRulesParam("raptorQueenHealth", 0)
+					Spring.SetGameRulesParam("raptorTechAnger", 0)
+				else
+					gameOver = GetGameFrame() + 200
+					Spring.SetGameRulesParam("raptorQueenAnger", 0)
+					Spring.SetGameRulesParam("raptorQueenHealth", 0)
+					Spring.SetGameRulesParam("raptorTechAnger", 0)
+					spawnQueue = {}
 
-				if not killedRaptorsAllyTeam then
-					killedRaptorsAllyTeam = true
+					if not killedRaptorsAllyTeam then
+						killedRaptorsAllyTeam = true
 
-					-- kill raptor team
-					Spring.KillTeam(raptorTeamID)
+						-- kill raptor team
+						Spring.KillTeam(raptorTeamID)
 
-					-- check if scavengers are in the same allyteam and alive
-					local scavengersFoundAlive = false
-					for _, teamID in ipairs(Spring.GetTeamList(raptorAllyTeamID)) do
-						local luaAI = Spring.GetTeamLuaAI(teamID)
-						if luaAI and (luaAI:find("Scavengers") or luaAI:find("ScavReduxAI")) and not select(3, Spring.GetTeamInfo(teamID, false)) then
-							scavengersFoundAlive = true
-						end
-					end
-
-					-- kill whole allyteam
-					if not scavengersFoundAlive then
+						-- check if scavengers are in the same allyteam and alive
+						local scavengersFoundAlive = false
 						for _, teamID in ipairs(Spring.GetTeamList(raptorAllyTeamID)) do
-							if not select(3, Spring.GetTeamInfo(teamID, false)) then
-								Spring.KillTeam(teamID)
+							local luaAI = Spring.GetTeamLuaAI(teamID)
+							if luaAI and luaAI:find("Scavengers") and not select(3, Spring.GetTeamInfo(teamID, false)) then
+								scavengersFoundAlive = true
+							end
+						end
+
+						-- kill whole allyteam
+						if not scavengersFoundAlive then
+							for _, teamID in ipairs(Spring.GetTeamList(raptorAllyTeamID)) do
+								if not select(3, Spring.GetTeamInfo(teamID, false)) then
+									Spring.KillTeam(teamID)
+								end
 							end
 						end
 					end
@@ -2008,13 +2121,6 @@ if gadgetHandler:IsSyncedCode() then
 			for i, defs in pairs(spawnQueue) do
 				if defs.burrow == unitID then
 					spawnQueue[i] = nil
-				end
-			end
-
-			for i = 1,#squadsTable do
-				if squadsTable[i].squadBurrow == unitID then
-					squadsTable[i].squadBurrow = nil
-					break
 				end
 			end
 

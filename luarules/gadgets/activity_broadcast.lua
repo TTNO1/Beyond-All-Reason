@@ -1,4 +1,6 @@
 
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name	= "Activity Broadcast",
@@ -81,21 +83,24 @@ else
 				activity = true
 			end
 			-- camera
-			local cameraState = GetCameraState()
 			if not activity then
-					for i,stateindex in pairs(cameraState) do
+				local cameraState = GetCameraState()
+				for i, stateindex in next, cameraState do
 					if stateindex ~= prevCameraState[i] then
 						activity = true
+						prevCameraState = cameraState
 						break
 					end
 				end
+				if not activity then
+					prevCameraState = cameraState
+				end
 			end
-			prevCameraState = cameraState
 
 			if activity then
 				SendLuaRulesMsg("^"..validation)
+				activity = false
 			end
-			activity = false
 			updateTimer = 0
 		end
 	end

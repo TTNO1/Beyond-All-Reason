@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name = "Unit Position Logger",
@@ -72,7 +74,7 @@ if not gadgetHandler:IsSyncedCode() then
 		allUnits[unitID] = {unitDefID, newTeam}
 	end
 
-	function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
+	function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam, weaponDefID)
 		allUnits[unitID] = nil
 		allUnitsTotal = allUnitsTotal - 1
 	end
@@ -218,25 +220,23 @@ if not gadgetHandler:IsSyncedCode() then
 			end
 
 			-- adjust logRate based on number of units on the map (so earlygame log can stay frequent)
-			logRate = maxLogRate * (allUnitsTotal / maxLogRateUnits)
-			logRate = math.min(maxLogRate, math.max(minLogRate, logRate))
+			logRate = math.clamp(maxLogRate * (allUnitsTotal / maxLogRateUnits), minLogRate, maxLogRate)
 
 			-- find out which players/specs aren't lagged behind and available to send a part of all unit position data
 			local participants = {}
 			local myPart
-			for _,playerID in ipairs(Spring.GetPlayerList()) do
-				local name,_,_,teamID,_,ping = Spring.GetPlayerInfo(playerID,false)
-				-- exclude lagged out players and AI
-				-- NOTE: ping is 0 when player is catching up or playing local (local can be slightly above 0 when low fps 0.033)
-				if (ping > 0.01 or isSinglePlayer) and ping < pingCutoff/1000 and not Spring.GetTeamLuaAI(teamID) and not select(4, Spring.GetTeamInfo(teamID)) then
-					participants[#participants+1] = playerID
-					if playerID == myPlayerID then
-						myPart = #participants
-					end
+		for _,playerID in ipairs(Spring.GetPlayerList()) do
+			local name,_,_,teamID,_,ping = Spring.GetPlayerInfo(playerID,false)
+			-- exclude lagged out players and AI
+			-- NOTE: ping is 0 when player is catching up or playing local (local can be slightly above 0 when low fps 0.033)
+			local isDead = select(4, Spring.GetTeamInfo(teamID))
+			if (ping > 0.01 or isSinglePlayer) and ping < pingCutoff/1000 and not Spring.GetTeamLuaAI(teamID) and not isDead then
+				participants[#participants+1] = playerID
+				if playerID == myPlayerID then
+					myPart = #participants
 				end
 			end
-
-			-- send log when you're included as participant
+		end			-- send log when you're included as participant
 			if myPart then
 				updateLog(gf, participants)
 				sendLog(gf, myPart, 1)

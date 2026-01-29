@@ -1,5 +1,7 @@
 local versionNum = '5.00'
 
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Auto Group",
@@ -11,6 +13,16 @@ function widget:GetInfo()
 		enabled = true
 	}
 end
+
+
+-- Localized functions for performance
+local tableInsert = table.insert
+
+-- Localized Spring API for performance
+local spGetUnitDefID = Spring.GetUnitDefID
+local spGetGameFrame = Spring.GetGameFrame
+local spGetMyTeamID = Spring.GetMyTeamID
+local spGetTeamUnits = Spring.GetTeamUnits
 
 include("keysym.h.lua")
 
@@ -58,34 +70,33 @@ local unit2group = presets[currPreset] -- list of unit types to group
 local mobileBuilders = {}
 local builtInPlace = {}
 
-local unitHealth = {}
 for udefID, def in ipairs(UnitDefs) do
 	if not def.isFactory then
 		if def.buildOptions and #def.buildOptions > 0 then
 			mobileBuilders[udefID] = true
 		end
 	end
-	unitHealth[udefID] = def.health
 end
 
 local finiGroup = {}
-local myTeam = Spring.GetMyTeamID()
+local myTeam = spGetMyTeamID()
 local createdFrame = {}
 local toBeAddedLater = {}
+local prevHealth = {}
 
 local gameStarted
 
 local GetUnitGroup = Spring.GetUnitGroup
 local SetUnitGroup = Spring.SetUnitGroup
 local GetSelectedUnits = Spring.GetSelectedUnits
-local GetUnitDefID = Spring.GetUnitDefID
+local GetUnitDefID = spGetUnitDefID
 local GetUnitHealth = Spring.GetUnitHealth
 local GetUnitIsBeingBuilt = Spring.GetUnitIsBeingBuilt
 local GetMouseState = Spring.GetMouseState
 local SelectUnitArray = Spring.SelectUnitArray
 local TraceScreenRay = Spring.TraceScreenRay
 local GetUnitPosition = Spring.GetUnitPosition
-local GetGameFrame = Spring.GetGameFrame
+local GetGameFrame = spGetGameFrame
 local Echo = Spring.Echo
 local GetUnitRulesParam = Spring.GetUnitRulesParam
 
@@ -96,15 +107,15 @@ function widget:GameStart()
 end
 
 function widget:PlayerChanged(playerID)
-	if Spring.GetSpectatingState() and (Spring.GetGameFrame() > 0 or gameStarted) then
+	if Spring.GetSpectatingState() and (spGetGameFrame() > 0 or gameStarted) then
 		widgetHandler:RemoveWidget()
 		return
 	end
-	myTeam = Spring.GetMyTeamID()
+	myTeam = spGetMyTeamID()
 end
 
 local function addAllUnits()
-	for _, unitID in ipairs(Spring.GetTeamUnits(myTeam)) do
+	for _, unitID in ipairs(spGetTeamUnits(myTeam)) do
 		local unitDefID = GetUnitDefID(unitID)
 		local gr = unit2group[unitDefID]
 		if gr ~= nil and GetUnitGroup(unitID) == nil then
@@ -113,10 +124,7 @@ local function addAllUnits()
 	end
 end
 
-local function ChangeUnitTypeAutogroupHandler(_, _, args, data)
-	local gr = args[1]
-	local removeAll = data and data['removeAll']
-
+local function changeUnitTypeAutogroup(gr, removeAll)
 	if not removeAll and not gr then return end -- noop if add to autogroup and no argument
 
 	if removeAll then
@@ -152,14 +160,13 @@ local function ChangeUnitTypeAutogroupHandler(_, _, args, data)
 		end
 	end
 	if addall then
-		local myUnits = Spring.GetTeamUnits(myTeam)
+		local myUnits = spGetTeamUnits(myTeam)
 		for i = 1, #myUnits do
 			local unitID = myUnits[i]
 			local curUnitDefID = GetUnitDefID(unitID)
 			if selUnitDefIDs[curUnitDefID] then
 				if gr then
-					local finishedBuilding = not GetUnitIsBeingBuilt(unitID)
-					if finishedBuilding then
+					if immediate or not GetUnitIsBeingBuilt(unitID) then
 						SetUnitGroup(unitID, gr)
 						SelectUnitArray({ unitID }, true)
 					end
@@ -173,7 +180,14 @@ local function ChangeUnitTypeAutogroupHandler(_, _, args, data)
 	return true
 end
 
-local function RemoveOneUnitFromGroupHandler(_, _, args)
+local function changeUnitTypeAutogroupHandler(_, _, args, data)
+	local gr = args and args[1]
+	local removeAll = data and data['removeAll']
+
+	changeUnitTypeAutogroup(gr, removeAll)
+end
+
+local function removeOneUnitFromGroupHandler(_, _, args)
 	local mx, my = GetMouseState()
 	local _, pos = TraceScreenRay(mx, my, true)
 	local mindist = math.huge
@@ -200,8 +214,7 @@ local function RemoveOneUnitFromGroupHandler(_, _, args)
 	return true
 end
 
-local function loadAutogroupPresetHandler(cmd, optLine, optWords, data, isRepeat, release, actions)
-	local newPreset = tonumber(optWords[1])
+local function loadAutogroupPreset(newPreset)
 	if not presets[newPreset] then
 		return
 	end
@@ -216,10 +229,10 @@ local function loadAutogroupPresetHandler(cmd, optLine, optWords, data, isRepeat
 		return
 	end
 
-	for _, uID in ipairs(Spring.GetTeamUnits(myTeam)) do
+	for _, uID in ipairs(spGetTeamUnits(myTeam)) do
 		local unitDefID = GetUnitDefID(uID)
 		local group = unit2group[unitDefID]
-		if tonumber(prevGroup[unitDefID]) == GetUnitGroup(uID) then -- if in last 
+		if tonumber(prevGroup[unitDefID]) == GetUnitGroup(uID) then -- if in last
 			SetUnitGroup(uID, -1)
 		end
 
@@ -229,14 +242,18 @@ local function loadAutogroupPresetHandler(cmd, optLine, optWords, data, isRepeat
 	end
 end
 
+local function loadAutogroupPresetHandler(cmd, optLine, optWords, data, isRepeat, release, actions)
+	loadAutogroupPreset(tonumber(optWords[1]))
+end
+
 
 function widget:Initialize()
 
 	widget:PlayerChanged()
 
-	widgetHandler:AddAction("add_to_autogroup", ChangeUnitTypeAutogroupHandler, nil, "p") -- With a parameter, adds all units of this type to a specific autogroup
-	widgetHandler:AddAction("remove_from_autogroup", ChangeUnitTypeAutogroupHandler, { removeAll = true }, "p") -- Without a parameter, removes all units of this type from autogroups
-	widgetHandler:AddAction("remove_one_unit_from_group", RemoveOneUnitFromGroupHandler, nil, "p") -- Removes the closest of selected units from groups and selects only it
+	widgetHandler:AddAction("add_to_autogroup", changeUnitTypeAutogroupHandler, nil, "p") -- With a parameter, adds all units of this type to a specific autogroup
+	widgetHandler:AddAction("remove_from_autogroup", changeUnitTypeAutogroupHandler, { removeAll = true }, "p") -- Without a parameter, removes all units of this type from autogroups
+	widgetHandler:AddAction("remove_one_unit_from_group", removeOneUnitFromGroupHandler, nil, "p") -- Removes the closest of selected units from groups and selects only it
 	widgetHandler:AddAction("load_autogroup_preset", loadAutogroupPresetHandler, nil, "p") -- Changes the autogroup preset
 
 	WG['autogroup'] = {}
@@ -256,6 +273,18 @@ function widget:Initialize()
 	WG['autogroup'].getGroups = function()
 		return unit2group
 	end
+	WG['autogroup'].addCurrentSelectionToAutogroup = function(groupNumber)
+		changeUnitTypeAutogroup(groupNumber)
+	end
+	WG['autogroup'].removeCurrentSelectionFromAutogroup = function()
+		changeUnitTypeAutogroup(nil, true)
+	end
+	WG['autogroup'].removeOneUnitFromGroup = function()
+		removeOneUnitFromGroupHandler()
+	end
+	WG['autogroup'].loadAutogroupPreset = function(newPreset)
+		loadAutogroupPreset(newPreset)
+	end
 	if GetGameFrame() > 0 then
 		addAllUnits()
 	end
@@ -266,12 +295,7 @@ function widget:Shutdown()
 end
 
 function widget:UnitFinished(unitID, unitDefID, unitTeam)
-	if unitTeam ~= myTeam or unitID == nil then
-		return
-	end
-
-	if GetUnitRulesParam(unitID, "resurrected") then
-		toBeAddedLater[unitID] = unitDefID
+	if unitTeam ~= myTeam or unitID == nil or GetUnitRulesParam(unitID, "resurrected") then
 		return
 	end
 
@@ -281,7 +305,7 @@ function widget:UnitFinished(unitID, unitDefID, unitTeam)
 		finiGroup[unitID] = 1
 	end
 
-	if builtInFrame or immediate or (builtInPlace[unitID] and #Spring.GetCommandQueue(unitID, 1) == 0) then
+	if not immediate and ((builtInPlace[unitID] and Spring.GetUnitCommandCount(unitID) == 0) or builtInFrame) then
 		local gr = unit2group[unitDefID]
 		if gr ~= nil and GetUnitGroup(unitID) == nil then
 			SetUnitGroup(unitID, gr)
@@ -291,14 +315,20 @@ function widget:UnitFinished(unitID, unitDefID, unitTeam)
 	builtInPlace[unitID] = nil
 end
 
-function widget:GameFrame()
-	for unitID, unitDefID in pairs(toBeAddedLater) do
-		if unitHealth[unitDefID] and GetUnitHealth(unitID) == unitHealth[unitDefID] then
-			local gr = unit2group[unitDefID]
-			if gr ~= nil and GetUnitGroup(unitID) == nil then
-				SetUnitGroup(unitID, gr)
+function widget:GameFrame(n)
+	if n % 10 == 0 then
+		for unitID, unitDefID in pairs(toBeAddedLater) do
+			local health = GetUnitHealth(unitID)
+			if health <= prevHealth[unitID] then -- stopped healing
+				local group = unit2group[unitDefID]
+				if group ~= nil and GetUnitGroup(unitID) == nil then
+					SetUnitGroup(unitID, group)
+				end
+				toBeAddedLater[unitID] = nil
+				prevHealth[unitID] = nil
+			else
+				prevHealth[unitID] = health
 			end
-			toBeAddedLater[unitID] = nil
 		end
 	end
 end
@@ -308,8 +338,21 @@ function widget:UnitCreated(unitID, unitDefID, unitTeam, builderID)
 
 	createdFrame[unitID] = GetGameFrame()
 
-	if builderID and mobileBuilders[Spring.GetUnitDefID(builderID)] then
+	if builderID and mobileBuilders[spGetUnitDefID(builderID)] then
 		builtInPlace[unitID] = true
+	end
+
+	if GetUnitRulesParam(unitID, "resurrected") then
+		toBeAddedLater[unitID] = unitDefID
+		prevHealth[unitID] = 0
+		return
+	end
+
+	if immediate then
+		local gr = unit2group[unitDefID]
+		if gr ~= nil then
+			SetUnitGroup(unitID, gr)
+		end
 	end
 end
 
@@ -318,6 +361,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
 	createdFrame[unitID] = nil
 	builtInPlace[unitID] = nil
 	toBeAddedLater[unitID] = nil
+	prevHealth[unitID] = nil
 end
 
 function widget:UnitGiven(unitID, unitDefID, newTeamID, teamID)
@@ -331,6 +375,7 @@ function widget:UnitGiven(unitID, unitDefID, newTeamID, teamID)
 	createdFrame[unitID] = nil
 	builtInPlace[unitID] = nil
 	toBeAddedLater[unitID] = nil
+	prevHealth[unitID] = nil
 end
 
 function widget:UnitTaken(unitID, unitDefID, oldTeamID, teamID)
@@ -362,10 +407,10 @@ function widget:GetConfigData()
 		local groups = {}
 		if persist then
 			for id, gr in pairs(preset) do
-				table.insert(groups, { UnitDefs[id].name, gr })
+				tableInsert(groups, { UnitDefs[id].name, gr })
 			end
 			for name, gr in pairs(rejectedUnits[i]) do
-				table.insert(groups, { name, gr })
+				tableInsert(groups, { name, gr })
 			end
 		end
 		savePresets[i] = groups

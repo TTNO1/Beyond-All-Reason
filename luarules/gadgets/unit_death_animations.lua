@@ -1,3 +1,5 @@
+local gadget = gadget ---@type Gadget
+
 function gadget:GetInfo()
 	return {
 		name      = "Death Animations",
@@ -14,67 +16,80 @@ if not gadgetHandler:IsSyncedCode() then
 	return
 end
 
-local hasDeathAnim = {
-  [UnitDefNames.corkarg.id] = true,
-  [UnitDefNames.corthud.id] = true,
-  [UnitDefNames.corstorm.id] = true,
-  [UnitDefNames.corsumo.id] = true,
-  [UnitDefNames.armraz.id] = true,
-  [UnitDefNames.armpw.id] = true,
-  [UnitDefNames.armck.id] = true,
-  [UnitDefNames.armrectr.id] = true,
-  [UnitDefNames.armrock.id] = true,
-  [UnitDefNames.armfast.id] = true,
-  [UnitDefNames.armzeus.id] = true,
-  [UnitDefNames.armfido.id] = true,
-  [UnitDefNames.armham.id] = true,
-  [UnitDefNames.corak.id] = true,
-  [UnitDefNames.corck.id] = true,
+local spSetUnitBlocking = Spring.SetUnitBlocking
+local spSetUnitIconDraw = Spring.SetUnitIconDraw
+local spGiveOrderToUnit = Spring.GiveOrderToUnit
+local spMoveCtrlEnable = Spring.MoveCtrl.Enable
+local spMoveCtrlDisable = Spring.MoveCtrl.Disable
+local spMoveCtrlSetVelocity = Spring.MoveCtrl.SetVelocity
+local stringFind = string.find
+local tableCopy = table.copy
+
+local units = {
+	corkarg = true,
+	corthud = true,
+	corstorm = true,
+	corsumo = true,
+	armraz = true,
+	armpw = true,
+	armck = true,
+	armrectr = true,
+	armrock = true,
+	armfast = true,
+	armzeus = true,
+	armfido = true,
+	armham = true,
+	corak = true,
+	corck = true,
 }
-
-local dyingUnits = {}
-
-for udid, ud in pairs(UnitDefs) do --almost all raptors have dying anims
-	if string.find(ud.name, "raptor") or (ud.customParams.subfolder and ud.customParams.subfolder == "other/raptors") then
+local unitsCopy = tableCopy(units)
+for name,v in pairs(unitsCopy) do
+	units[name..'_scav'] = true
+end
+local hasDeathAnim = {}
+for udid, ud in pairs(UnitDefs) do
+	if units[ud.name] then
+		hasDeathAnim[udid] = true
+	end
+	-- almost all raptors have dying anims
+	if stringFind(ud.name, "raptor", 1, true) or (ud.customParams.subfolder and ud.customParams.subfolder == "other/raptors") then
 		hasDeathAnim[udid] = true
 	end
 end
 
-local SetUnitNoSelect	= Spring.SetUnitNoSelect
-local GiveOrderToUnit	= Spring.GiveOrderToUnit
-local SetUnitBlocking 	= Spring.SetUnitBlocking
-local UnitIconSetDraw   = Spring.UnitIconSetDraw
-local MoveCtrlEnable 	= Spring.MoveCtrl.Enable
-local MoveCtrlDisable 	= Spring.MoveCtrl.Disable
-local MoveCtrlSetVelocity = Spring.MoveCtrl.SetVelocity
+local dyingUnits = {}
+
 local CMD_STOP = CMD.STOP
+
+function gadget:Initialize()
+	gadgetHandler:RegisterAllowCommand(CMD.ANY)
+end
 
 function gadget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID, attackerTeamID)
 	if hasDeathAnim[unitDefID] then
-		--Spring.Echo("gadget:UnitDestroyed",unitID, unitDefID, teamID, attackerID, attackerDefID, attackerTeamID)
-		SetUnitNoSelect(unitID,true)
-    	SetUnitBlocking(unitID,false) -- non blocking while dying
-		Spring.UnitIconSetDraw(unitID, false) -- dont draw icons
-		GiveOrderToUnit(unitID, CMD_STOP, 0, 0)
-		MoveCtrlEnable(unitID)
-		MoveCtrlSetVelocity(unitID, 0, 0, 0)
+    	spSetUnitBlocking(unitID, false) -- non blocking while dying
+		spSetUnitIconDraw(unitID, false) -- dont draw icons
+		spGiveOrderToUnit(unitID, CMD_STOP, 0, 0)
+		spMoveCtrlEnable(unitID)
+		spMoveCtrlSetVelocity(unitID, 0, 0, 0)
     	dyingUnits[unitID] = true
 	end
 end
 
-function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions, cmdTag, playerID, fromSynced, fromLua) -- do not allow dying units to be moved
+ -- do not allow dying units to be moved
+function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions, cmdTag, playerID, fromSynced, fromLua)
 	return dyingUnits[unitID] and false or true
 end
 
 function gadget:RenderUnitDestroyed(unitID, unitDefID, unitTeam) --called when killed anim finishes
 	if dyingUnits[unitID] then
-		MoveCtrlDisable(unitID) -- just in case, not sure if it's needed
+		spMoveCtrlDisable(unitID) -- just in case, not sure if it's needed
 		dyingUnits[unitID] = nil
 	end
 end
 
-function gadget:UnitCreated(unitID, unitDefID, unitTeam, builderID) -- for unitID reuse, just in case
+function gadget:UnitCreated(unitID, unitDefID, unitTeam, builderID)
 	if dyingUnits[unitID] then
-		dyingUnits[unitID] = nil
+		dyingUnits[unitID] = nil -- for unitID reuse, just in case
 	end
 end

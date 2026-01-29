@@ -1,6 +1,8 @@
 include("keysym.h.lua")
 local versionNumber = "1.34"
 
+local widget = widget ---@type Widget
+
 function widget:GetInfo()
 	return {
 		name = "Pause Screen",
@@ -13,8 +15,11 @@ function widget:GetInfo()
 	}
 end
 
+
+-- Localized Spring API for performance
+local spGetViewGeometry = Spring.GetViewGeometry
+
 local spGetGameSpeed = Spring.GetGameSpeed
-local spGetGameState = Spring.GetGameState
 local spGetGameFrame = Spring.GetGameFrame
 
 local glColor = gl.Color
@@ -39,7 +44,7 @@ local osClock = os.clock
 -- CONFIGURATION
 
 local fontfile = "fonts/unlisted/MicrogrammaDBold.ttf"
-local vsx, vsy, vpx, vpy = Spring.GetViewGeometry()
+local vsx, vsy, vpx, vpy = spGetViewGeometry()
 local fontfileScale = (0.5 + (vsx * vsy / 5700000))
 local fontfileSize = 35
 local fontfileOutlineSize = 6
@@ -152,10 +157,6 @@ function widget:Update(dt)
 	else
 		paused = false
 	end
-
-	--if spGetGameState and select(3, spGetGameState()) then	-- is locally paused? NOTE: returns true if you do /pause as spec regardless of game actually being paused of not
-	--	paused = true
-	--end
 
 	-- admin pause / game freeze
 	if not paused and gameFrame > 0 and not gameover then
@@ -288,7 +289,7 @@ local function updateWindowCoords()
 end
 
 function widget:ViewResize()
-	vsx, vsy, vpx, vpy = Spring.GetViewGeometry()
+	vsx, vsy, vpx, vpy = spGetViewGeometry()
 	usedSizeMultiplier = (0.5 + ((vsx * vsy) / 5500000)) * sizeMultiplier
 
 	local newFontfileScale = (0.5 + (vsx * vsy / 5700000))

@@ -11,7 +11,6 @@ return {
 		buildtime = 10,
 		canmove = false,
 		capturable = false,
-		category = "ALL NOTLAND NOTSUB NOWEAPON NOTSHIP NOTAIR NOTHOVER SURFACE EMPABLE",
 		collisionvolumeoffsets = "0 0 0",
 		collisionvolumescales = "0 0 0",
 		collisionvolumetype = "box",
@@ -74,7 +73,6 @@ return {
 				smoketrail = 1,
 				soundhit = "scavspawn",
 				startvelocity = 2000, -- === weaponvelocity to ensure consistent speed
-				targetborder = 0.75,
 				turret = 1,
 				weaponacceleration = 450,
 				weapontimer = 2,
