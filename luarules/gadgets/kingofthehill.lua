@@ -183,6 +183,7 @@ function RulesParamDataWrapper.new(args)
 		error("Missing one or more arguments for new RulesParamDataWrapper", 2)
 	end
 	setmetatable(args, RulesParamDataWrapper.mt)
+	args:setAndSend(args.value)
 	return args
 end
 -- Sets the value but does not send it
@@ -343,7 +344,7 @@ local hillArea
 -- whether or not players can build outside of their start area or the captured hill
 local buildOutsideBoxes
 
--- the total time needed as king to win
+-- the total time needed as king to win in milliseconds
 local winKingTime
 
 -- winKingTime in frames
@@ -396,7 +397,7 @@ local kingStartFrame = RulesParamDataWrapper.new({paramName = "kingStartFrame"})
 local allyTeamKingTime = {}
 
 -- the frame at which the current king will win if he remains king
-local kingWinFrame = math.maxinteger
+local kingWinFrame = math.huge
 
 -- the allyTeamId of the ally team currently in the process of capturing the hill
 local capturingAllyTeam = RulesParamDataWrapper.new({paramName = "capturingAllyTeam"})
@@ -474,7 +475,7 @@ function gadget:Initialize()
 	--Get and parse KOTH related mod options
 	hillArea = parseAreaString(modOptions.kingofthehillarea)
 	buildOutsideBoxes = not modOptions.kingofthehillbuildoutsideboxes
-	winKingTime = (tonumber(modOptions.kingofthehillwinKingTime) or 10) * 60 * 1000
+	winKingTime = (tonumber(modOptions.kingofthehillwinkingtime) or 10) * 60 * 1000
 	winKingTimeFrames = fps * winKingTime / 1000
 	captureDelay = (tonumber(modOptions.kingofthehillcapturedelay) or 20) * 1000
 	captureDelayFrames = fps * captureDelay / 1000
@@ -489,19 +490,17 @@ function gadget:Initialize()
 	--Populate the startBoxes table with all allyTeam start boxes in the form of RectMapAreas
 	--and populate teamAllyTeams, allyTeamLives, and allyTeamKingTime tables
 	for _, allyTeamId in ipairs(Spring.GetAllyTeamList()) do
-		if allyTeamId == gaiaAllyTeamID then
-			goto continue
+		if allyTeamId ~= gaiaAllyTeamID then
+			local left, bottom, right, top = Spring.GetAllyTeamStartBox(allyTeamId)
+			startBoxes[allyTeamId] = RectMapArea.new{left = left, top = top, right = right, bottom = bottom}
+			local numTeams = 0
+			for _, teamId in ipairs(Spring.GetTeamList(allyTeamId)) do
+				teamToAllyTeam[teamId] = allyTeamId
+				numTeams = numTeams + 1
+			end
+			allyTeamLives[allyTeamId] = numTeams
+			allyTeamKingTime[allyTeamId] = RulesParamDataWrapper.new({paramName = "allyTeamKingTime" .. allyTeamId, value = 0})
 		end
-		local left, bottom, right, top = Spring.GetAllyTeamStartBox(allyTeamId)
-		startBoxes[allyTeamId] = RectMapArea.new{left = left, top = top, right = right, bottom = bottom}
-		local numTeams = 0
-		for _, teamId in ipairs(Spring.GetTeamList(allyTeamId)) do
-			teamToAllyTeam[teamId] = allyTeamId
-			numTeams = numTeams + 1
-		end
-		allyTeamLives[allyTeamId] = numTeams
-		allyTeamKingTime[allyTeamId] = RulesParamDataWrapper.new({paramName = "allyTeamKingTime" .. allyTeamId, value = 0})
-	    ::continue::
 	end
 	
 	--Remove the call-in that cancels unpermitted build commands if building outside boxes is allowed
@@ -581,7 +580,7 @@ function gadget:GameFrame(frame)
 	
 	-- End the game if the king won
 	if frame >= kingWinFrame then
-		Spring.GameOver(kingAllyTeam.value)
+		Spring.GameOver({kingAllyTeam.value})
 	end
 	
 	-- Capture the hill if the captureDelay has elapsed
@@ -592,8 +591,9 @@ function gadget:GameFrame(frame)
 			kingTime:setAndSend(kingTime.value + frame - kingStartFrame.value)
 			setKingGlobalLOS(false)
 			kingAllyTeam:setAndSend(nil)
+			kingStartFrame:setAndSend(frame)
 			destroyHillBuildings()
-			kingWinFrame = math.maxinteger
+			kingWinFrame = math.huge
 		elseif not kingAllyTeam.value and capturingCountingUp.value then
 			-- Set the new king and the king starting/win frame
 			kingAllyTeam:setAndSend(capturingAllyTeam.value)
@@ -653,7 +653,7 @@ local function resetKingAndCapturing()
 	capturingAllyTeam:setAndSend(nil)
 	capturingCompleteFrame:setAndSend(0)
 	capturingCountingUp:setAndSend(false)
-	kingWinFrame = math.maxinteger
+	kingWinFrame = math.huge
 	destroyHillBuildings()
 end
 

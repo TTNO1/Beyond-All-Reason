@@ -1343,7 +1343,7 @@ local options = {
     },
     
     {
-        key    	= "kingofthehillwinKingTime",
+        key    	= "kingofthehillwinkingtime",
         name   	= "Win After Time",
         desc   	= "A team will win once they have spent this number of minutes as the king",
         type   	= "number",
