@@ -84,6 +84,10 @@ function gadget:GetInfo()
 	};
 end
 
+if not gadgetHandler:IsSyncedCode() then
+    return false
+end
+
 -- #region Global Constants and Functions
 local Spring = Spring
 local Game = Game
@@ -193,7 +197,7 @@ end
 -- Sends the value if it is different from the last sent value
 function RulesParamDataWrapper:send()
 	if self.value ~= self.lastSentValue then
-		Spring.SetGameRulesParam (self.paramName, self.value)
+		Spring.SetGameRulesParam(self.paramName, self.value)
 		self.lastSentValue = self.value
 	end
 end
@@ -423,8 +427,7 @@ local capturingCountingUp = RulesParamDataWrapper.new({paramName = "capturingCou
 local function parseAreaString(string)
 	local words = splitStr(string)
 	if #words < 4 then
-		--TODO not sure if Spring.Log works in synced
-		Spring.Log("KOTH", "error", "Not enough arguments in area string. Resorting to default area box.")
+		Spring.Log("KingOfTheHill", "error", "Not enough arguments in area string. Resorting to default area box.")
 		return defaultHillArea
 	end
 	local shape = words[1]
@@ -435,14 +438,14 @@ local function parseAreaString(string)
 	elseif shape == "circle" then
 		numArgumentCount = 3
 	else
-		Spring.Log("KOTH", "error", "Invalid shape in area string. Resorting to default area box.")
+		Spring.Log("KingOfTheHill", "error", "Invalid shape in area string. Resorting to default area box.")
 		return defaultHillArea
 	end
 	
 	for i = 1, numArgumentCount, 1 do
 		local num = tonumber(words[i+1])
 		if not num or num < 0 or num > mapAreaScale then
-			Spring.Log("KOTH", "error", "Invalid number in area string. Resorting to default area box.")
+			Spring.Log("KingOfTheHill", "error", "Invalid number in area string. Resorting to default area box.")
 			return defaultHillArea
 		end
 		nums[i] = num

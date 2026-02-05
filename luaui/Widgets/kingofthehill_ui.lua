@@ -307,39 +307,19 @@ local progressBarHeight = 10
 --Defines the vertical space between each team progress bar in pixels
 local progressBarVerticalSpacing = 6
 
---The alpha value (opacity) to use for team colors in the progress bars
-local progressBarColorAlpha = 0.4
-
 --Deifnes the height of the capture progress bar in pixels
 local captureProgressBarHeight = 15
 
 --Progress bar shader file paths
-local progressBarVertexShaderPath = "LuaUI/Widgets/Shaders/kingofthehillui.vert.glsl"
-local progressBarFragmentShaderPath = "LuaUI/Widgets/Shaders/kingofthehillui.frag.glsl"
-
---The shaders for the progress bars
-local progressBarShader = gl.CreateShader({vertex = VFS.LoadFile(progressBarVertexShaderPath),
-											fragment = VFS.LoadFile(progressBarFragmentShaderPath)})
-Spring.Log("KingOfTheHill_UI", "error", "Shader Log: \n" .. gl.GetShaderLog())
-
---The size of the progress bar fragment shader UBO in number of Vec4s
-local progressBarFragmentShaderUBOVec4Size = 3
+local progressBarVertexShaderPath = "LuaUI/Shaders/kingofthehillui.vert.glsl"
+local progressBarFragmentShaderPath = "LuaUI/Shaders/kingofthehillui.frag.glsl"
 
 --Map area shader file paths
-local mapAreaVertexShaderPath = "LuaUI/Widgets/Shaders/kingofthehillmaparea.vert.glsl"
-local mapAreaFragmentShaderPath = "LuaUI/Widgets/Shaders/kingofthehillmaparea.frag.glsl"
+local mapAreaVertexShaderPath = "LuaUI/Shaders/kingofthehillmaparea.vert.glsl"
+local mapAreaFragmentShaderPath = "LuaUI/Shaders/kingofthehillmaparea.frag.glsl"
 
---The shaders for the progress bars
-local mapAreaShader = gl.CreateShader({vertex = VFS.LoadFile(mapAreaVertexShaderPath),
-										fragment = VFS.LoadFile(mapAreaFragmentShaderPath):gsub("//##UBO##", gl.GetEngineUniformBuffer()),
-										uniformInt = {depthBuffer = 0}})
-Spring.Log("KingOfTheHill_UI", "error", "Shader Log: \n" .. gl.GetShaderLog())
-
---The size of the arrays in the map area fragment shader
-local mapAreaFragmentShaderMaxTeams = 32
-
---The size of the progress bar fragment shader UBO in number of Vec4s
-local mapAreaFragmentShaderUBOVec4Size = 2 * mapAreaFragmentShaderMaxTeams + 2
+--The size of the arrays in the fragment shaders
+local fragmentShaderMaxTeams = 32
 
 --Specifies the interval at which the UI is updated (i.e. updated every x frames)
 local framesPerUpdate = 5
@@ -348,7 +328,7 @@ local framesPerUpdate = 5
 -- since the ordering of the size updates from the lower widgets is unknown to me.
 -- This represents the number of frames after the screen is resized for which we will
 -- update the widget box size to match those below it
-local maxScreenResizeCountdown = 6
+local maxScreenResizeCountdown = 10
 
 -- #endregion
 
@@ -388,6 +368,9 @@ local teamToAllyTeam = {}
 -- array of allyTeamIds
 local allyTeams = {}
 
+-- allyTeamId to index in allyTeams
+local allyTeamIndices = {}
+
 -- the number of ally teams
 local numAllyTeams = 0--TODO remove and replace with #allyTeams if not used frequently
 
@@ -418,6 +401,28 @@ local capturingCompleteFrame
 -- true = up = progressing toward capturing the hill, false = down = losing progress that was previously made
 local capturingCountingUp
 
+-- #endregion
+
+--//////////////////////////
+-- #region       UI
+--//////////////////////////
+
+-- UI Variables
+-- ------------
+
+--Contains the position of the UI box. Used for WG API functions
+local uiBoxPosition
+
+--The shaders for the progress bars
+local progressBarShader = gl.CreateShader({vertex = VFS.LoadFile(progressBarVertexShaderPath),
+												fragment = VFS.LoadFile(progressBarFragmentShaderPath)})
+
+--The shaders for the area outlines
+local mapAreaShader
+
+--A UBO containing an array of ally team colors
+local allyTeamColorsUBO
+
 --The UIElement for the box containing the progress bars
 local uiBoxElement
 
@@ -433,15 +438,6 @@ local uiMapAreasInstance;
 -- Used to update the position of the UI box multiple times after the screen is resized
 -- since the ordering of the size updates from the lower widgets is unknown to me
 local screenResizeCountdown = 0
-
---Contains the position of the UI box. Used for WG API functions
-local uiBoxPosition
-
--- #endregion
-
---//////////////////////////
--- #region       UI
---//////////////////////////
 
 -- UI Util Functions
 -- -----------------
@@ -468,6 +464,23 @@ local function useShader(shader)
 	end
 end
 
+-- Prevent rebinding UBO if it is already bound
+local allyTeamColorsUBOBound = false
+local function bindAllyTeamColorsUBO()
+	if allyTeamColorsUBOBound then
+		return
+	end
+	allyTeamColorsUBO:BindBufferRange(6, false, false, GL.UNIFORM_BUFFER)
+	allyTeamColorsUBOBound = true
+end
+local function unbindAllyTeamColorsUBO()
+	if not allyTeamColorsUBOBound then
+		return
+	end
+	allyTeamColorsUBO:UnbindBufferRange(6, false, false, GL.UNIFORM_BUFFER)
+	allyTeamColorsUBOBound = false
+end
+
 -- Gets the depth buffer based on various conditions
 -- The logic in this function was copied from Beherith's Start Polygons widget
 local advGroundShading = select(2, Spring.HaveAdvShading())
@@ -479,8 +492,92 @@ local function getDepthBufferTexture()
 	end
 end
 
+-- Gets the map normals texture depending on what kind of map/shading is used
+local isSSMFMap = gl.TextureInfo("$ssmf_normals") ~= nil;
+local function getMapNormalsTexture()
+	--[[
+	if advGroundShading then
+		return "$map_gbuffer_normtex"
+	elseif isSSMFMap then
+		return "$ssmf_normals"
+	else
+		return "$normals"
+	end
+	]]
+	
+	--The other textures are too fine and cause artifacts
+	return "$normals"
+end
+
+--Initializes the start box uniforms in the map area fragment shader if they have not been initialized yet
+--This is called in the draw callin so that we can activate the shader to set the uniforms
+--We can't use the shader params of gl.CreateShader because it does not support an array of vectors
+local startBoxUniformsInitialized = false
+local function initializeStartBoxUniforms()
+	if startBoxUniformsInitialized then
+		return
+	end
+	useShader(mapAreaShader)
+	for index, allyTeam in ipairs(allyTeams) do
+		local location = gl.GetUniformLocation(mapAreaShader, "startAreas[" .. (index - 1) .. "]")
+		gl.Uniform(location, table.unpack(startBoxes[allyTeam]:getVec4Representation()))
+	end
+	startBoxUniformsInitialized = true
+end
+
 -- UI Classes
 -- ----------
+
+local UniformValue = {
+	mt = {},
+	Type = {INT = 1, FLOAT = 2, VECTOR = 3, ARRAY = 4, MATRIX = 5}
+}
+UniformValue.mt.__index = UniformValue
+function UniformValue.new(args)
+	args = args or {}
+	if not args.name or not args.shader or not args.value or not args.type or (args.type == UniformValue.Type.ARRAY and not args.arraySubtype) then
+		error("Missing one or more arguments for new UniformValue", 2)
+	end
+	setmetatable(args, UniformValue.mt)
+	args.lastValue = nil
+	args.location = args.location or gl.GetUniformLocation(args.shader, args.name)
+	args.invalid = true
+	return args
+end
+function UniformValue:update()
+	if not self.invalid then
+		return
+	end
+	useShader(self.shader)
+	if self.type == UniformValue.Type.FLOAT then
+		gl.Uniform(self.location, self.value)
+	elseif self.type == UniformValue.Type.INT then
+		gl.UniformInt(self.location, self.value)
+	elseif self.type == UniformValue.Type.VECTOR then
+		gl.Uniform(self.location, table.unpack(self.value))
+	elseif self.type == UniformValue.Type.ARRAY then
+		gl.UniformArray(self.location, self.arraySubtype, self.value)
+	elseif self.type == UniformValue.Type.MATRIX then
+		gl.UniformMatrix(self.location, self.value)
+	end
+	self.lastValue = self.value
+	self.invalid = false
+end
+function UniformValue:set(newValue)
+	self.value = newValue
+	self.invalid = not self:equalsLastValue(newValue)
+end
+function UniformValue:equalsLastValue(newValue)
+	if self.type == UniformValue.Type.VECTOR or self.type == UniformValue.Type.ARRAY or self.type == UniformValue.Type.MATRIX then
+		for index, value in ipairs(self.lastValue) do
+			if value ~= newValue[index] then
+				return false
+			end
+		end
+		return true
+	end
+	return self.lastValue == newValue
+end
 
 -- A class for a generic UI element, by default, renders a basic FlowUI box
 local UIElement = {
@@ -579,32 +676,31 @@ end
 -- A class for each UI progress bar
 local UIBar = {
 	mt = {},
-	Type = {TEAM = 0, KING_TEAM = 1, CAPTURE = 2}--enum for type of progress bar
+	capturingTeamIndex = UniformValue.new({name = "capturingTeamIndex", shader = progressBarShader, value = allyTeamIndices[capturingAllyTeam] or -1, type = UniformValue.Type.INT})
 }
 setmetatable(UIBar, UIElement.mt)
 UIBar.mt.__index = UIBar
 function UIBar.new(args)
 	args = UIElement.new(args)
-	if not args.color or not args.type then
+	if args.allyTeam == nil then
 		error("Missing one or more arguments for new UIBar", 2)
 	end
-	args.progress = args.progress or 0
-	args.opacity = args.opacity or progressBarColorAlpha
+	setmetatable(args, UIBar.mt)
+	args.allyTeamIndex = (allyTeamIndices[args.allyTeam] or fragmentShaderMaxTeams + 1) - 1
 	args.shader = args.shader or progressBarShader
+	args.allyTeamIndexUniformLocation = gl.GetUniformLocation(args.shader, "allyTeamIndex")
+	args.progress = UniformValue.new({name = "progress[" .. args.allyTeamIndex .. "]", shader = args.shader, value = args.progress or 0, type = UniformValue.Type.FLOAT})
 	args.vbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
 	args.vbo:Define(4, {{id = 0, name = "position", size = 2}, {id = 1, name = "uv", size = 2}})
 	args.vao = gl.GetVAO()
 	args.vao:AttachVertexBuffer(args.vbo)
-	args.ubo = gl.GetVBO(GL.UNIFORM_BUFFER, false)
-	args.ubo:Define(1, progressBarFragmentShaderUBOVec4Size)--seconds arg expects size in number of Vec4s
-	setmetatable(args, UIBar.mt)
 	return args
 end
 function UIBar:draw()
-	self.ubo:BindBufferRange(6, nil, nil, GL.UNIFORM_BUFFER)
 	useShader(self.shader)
+	bindAllyTeamColorsUBO()
+	gl.UniformInt(self.allyTeamIndexUniformLocation, self.allyTeamIndex)
 	self.vao:DrawArrays(GL.TRIANGLE_STRIP)
-	self.ubo:UnbindBufferRange(6, nil, nil, GL.UNIFORM_BUFFER)
 end
 function UIBar:updatePosition()
 	self:computeAbsoluteRect()
@@ -624,33 +720,19 @@ function UIBar:updatePosition()
 	self.positionInvalid = false
 end
 function UIBar:updateData()
-	local color = self.color
-	local data = {color[1], color[2], color[3], self.opacity, self.progress, self.type}
-	local remainingFloats = progressBarFragmentShaderUBOVec4Size * 4 - #data
-	for i = 1, remainingFloats, 1 do
-		table.insert(data, 0.0)
-	end
-	self.ubo:Upload(data)
+	self.progress:update()
+	UIBar.capturingTeamIndex:update()
 	self.dataInvalid = false
 end
 function UIBar:setProgress(progress)
-	if math.abs(progress - self.progress) * self.absWidth >= 1 then
-		self.progress = progress
+	if math.abs(progress - self.progress.lastValue) * self.absWidth >= 1 then
+		self.progress:set(progress)
 		self:invalidateData()
 	end
 end
-function UIBar:setColor(color)
-	if self.color[1] == color[1] and self.color[2] == color[2] and self.color[3] == color[3] then
-		return
-	end
-	self.color = color
-	self:invalidateData()
-end
-function UIBar:setType(type)
-	if self.type == type then
-		return
-	end
-	self.type = type
+function UIBar:setCapturingAllyTeam(capturingAllyTeamId)
+	local newCapturingTeamIndex = (allyTeamIndices[capturingAllyTeamId] or 1) - 1
+	UIBar.capturingTeamIndex:set(newCapturingTeamIndex)
 	self:invalidateData()
 end
 
@@ -662,49 +744,23 @@ setmetatable(UIMapAreas, UIElement.mt)
 UIMapAreas.mt.__index = UIMapAreas
 function UIMapAreas.new(args)
 	args = UIElement.new(args)
-	args.allyTeamToIndex = {}--table of allyTeamId to its index in the UBO array
-	args.hillColorIndex = -1
+	setmetatable(args, UIMapAreas.mt)
 	args.shader = args.shader or mapAreaShader
+	args.hillColorIndex = UniformValue.new({name = "hillColorIndex", shader = args.shader, value = args.hillColorIndex or -1, type = UniformValue.Type.INT})
 	args.vbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
 	args.vbo:Define(4, {{id = 0, name = "position", size = 2}, {id = 1, name = "uv", size = 2}, {id = 2, name = "nd", size = 2}})
 	args.vao = gl.GetVAO()
 	args.vao:AttachVertexBuffer(args.vbo)
-	args.ubo = gl.GetVBO(GL.UNIFORM_BUFFER, false)
-	args.ubo:Define(1, mapAreaFragmentShaderUBOVec4Size)--seconds arg expects size in number of Vec4s
-	setmetatable(args, UIMapAreas.mt)
-	--Populate UBO with static data
-	local data = {}
-	for i = 1, math.min(numAllyTeams, mapAreaFragmentShaderMaxTeams), 1 do
-		local allyTeam = allyTeams[i]
-		args.allyTeamToIndex[allyTeam] = i
-		local dataOffset = (i - 1) * 4
-		local startBoxVec4 = startBoxes[allyTeam]:getVec4Representation()
-		local color = allyTeamColors[allyTeam]
-		for j = 1, 4, 1 do
-			data[dataOffset + j] = startBoxVec4[j]
-			data[dataOffset + j + 4] = color[j]
-		end
-	end
-	local hillAreaVec4 = hillArea:getVec4Representation()
-	for i = 1, 4, 1 do
-		data[mapAreaFragmentShaderMaxTeams * 8 + i] = hillAreaVec4[i]
-	end
-	data[mapAreaFragmentShaderMaxTeams * 8 + 5] = args.hillColorIndex
-	data[mapAreaFragmentShaderMaxTeams * 8 + 6] = numAllyTeams
-	local remainingFloats = mapAreaFragmentShaderUBOVec4Size * 4 - #data
-	for i = 1, remainingFloats, 1 do
-		table.insert(data, 0.0)
-	end
-	args.ubo:Upload(data)
 	return args
 end
 function UIMapAreas:draw()
-	self.ubo:BindBufferRange(6, nil, nil, GL.UNIFORM_BUFFER)
-	gl.Texture(0, getDepthBufferTexture())
 	useShader(self.shader)
+	gl.Texture(0, getDepthBufferTexture())
+	gl.Texture(1, getMapNormalsTexture())
+	bindAllyTeamColorsUBO()
 	self.vao:DrawArrays(GL.TRIANGLE_STRIP)
 	gl.Texture(0, false)
-	self.ubo:UnbindBufferRange(6, nil, nil, GL.UNIFORM_BUFFER)
+	gl.Texture(1, false)
 end
 function UIMapAreas:updatePosition()
 	self:computeAbsoluteRect()
@@ -724,15 +780,13 @@ function UIMapAreas:updatePosition()
 	self.positionInvalid = false
 end
 function UIMapAreas:updateData()
-	self.vbo:Upload({self.hillColorIndex, numAllyTeams, 0, 0}, nil, mapAreaFragmentShaderUBOVec4Size - 1)
+	self.hillColorIndex:update()
 	self.dataInvalid = false
 end
 function UIMapAreas:setKingAllyTeam(kingAllyTeamId)
-	local newHillColorIndex = self.allyTeamToIndex[kingAllyTeamId] or -1
-	if self.hillColorIndex ~= newHillColorIndex then
-		self.hillColorIndex = newHillColorIndex
-		self:invalidateData()
-	end
+	local newHillColorIndex = (allyTeamIndices[kingAllyTeamId] or 0) - 1
+	self.hillColorIndex:set(newHillColorIndex)
+	self:invalidateData()
 end
 
 --///////////////
@@ -747,8 +801,7 @@ end
 local function parseAreaString(string)
 	local words = splitStr(string)
 	if #words < 4 then
-		--TODO not sure if Spring.Log works in synced
-		Spring.Log("KOTH", "error", "Not enough arguments in area string. Resorting to default area box.")
+		Spring.Log("KingOfTheHill_ui", "error", "Not enough arguments in area string. Resorting to default area box.")
 		return defaultHillArea
 	end
 	local shape = words[1]
@@ -759,14 +812,14 @@ local function parseAreaString(string)
 	elseif shape == "circle" then
 		numArgumentCount = 3
 	else
-		Spring.Log("KOTH", "error", "Invalid shape in area string. Resorting to default area box.")
+		Spring.Log("KingOfTheHill_ui", "error", "Invalid shape in area string. Resorting to default area box.")
 		return defaultHillArea
 	end
 	
 	for i = 1, numArgumentCount, 1 do
 		local num = tonumber(words[i+1])
 		if not num or num < 0 or num > mapAreaScale then
-			Spring.Log("KOTH", "error", "Invalid number in area string. Resorting to default area box.")
+			Spring.Log("KingOfTheHill_ui", "error", "Invalid number in area string. Resorting to default area box.")
 			return defaultHillArea
 		end
 		nums[i] = num
@@ -802,6 +855,9 @@ function widget:Initialize()
 	healthMultiplier = tonumber(modOptions.kingofthehillhealthmultiplier) or 1
 	kingGlobalLos = modOptions.kingofthehillkinggloballos
 	
+	--Arrays for data in uniforms and UBO
+	local allyTeamColorsVec4Array = {}
+	
 	-- Initialize the main box UIElement
 	uiBoxElement = UIElement.new()
 	
@@ -810,20 +866,22 @@ function widget:Initialize()
 		gaiaAllyTeamID = select(6, Spring.GetTeamInfo(Spring.GetGaiaTeamID()))
 	end
 	
-	uiMapAreasInstance = UIMapAreas.new()
-	
 	--Populate the startBoxes table with all allyTeam start boxes in the form of RectMapAreas
 	--Populate teamAllyTeams
 	--Compute average color for ally team
 	--Populate allyTeamProgressBars
-	for _, allyTeamId in ipairs(Spring.GetAllyTeamList()) do
+	--Populate ally team colors UBO array
+	--Populate map area shader start box uniform array
+	for index, allyTeamId in ipairs(Spring.GetAllyTeamList()) do
 		if allyTeamId ~= gaiaAllyTeamID then
 			table.insert(allyTeams, allyTeamId)
+			allyTeamIndices[allyTeamId] = index
 			numAllyTeams = numAllyTeams + 1
 			allyTeamKingTime[allyTeamId] = 0
 			
 			local left, bottom, right, top = Spring.GetAllyTeamStartBox(allyTeamId)
-			startBoxes[allyTeamId] = RectMapArea.new{left = left, top = top, right = right, bottom = bottom}
+			local startBox = RectMapArea.new{left = left, top = top, right = right, bottom = bottom}
+			startBoxes[allyTeamId] = startBox
 			
 			local red, green, blue = 0, 0, 0
 			local numTeams = 0
@@ -832,7 +890,6 @@ function widget:Initialize()
 				teamToAllyTeam[teamId] = allyTeamId
 				
 				-- color average computed using squares (https://youtu.be/LKnqECcg6Gw)
-				--TODO remove defaults
 				local teamRed, teamGreen, teamBlue = Spring.GetTeamColor(teamId)
 				red = red + teamRed ^ 2
 				green = green + teamGreen ^ 2
@@ -840,16 +897,42 @@ function widget:Initialize()
 				numTeams = numTeams + 1
 			end
 			
-			-- r g b = 1 2 3
-			local averageColor = {math.sqrt(red/numTeams), math.sqrt(green/numTeams), math.sqrt(blue/numTeams)}
+			-- r g b a = 1 2 3 4
+			local averageColor = {math.sqrt(red/numTeams), math.sqrt(green/numTeams), math.sqrt(blue/numTeams), 1}
 			allyTeamColors[allyTeamId] = averageColor
 			
-			allyTeamProgressBars[allyTeamId] = UIBar.new({color = averageColor, type = UIBar.Type.TEAM, parent = uiBoxElement})
+			allyTeamProgressBars[allyTeamId] = UIBar.new({allyTeam = allyTeamId, parent = uiBoxElement})
+			
+			if index <= fragmentShaderMaxTeams then
+				local dataOffset = (index - 1) * 4
+				for j = 1, 4, 1 do
+					allyTeamColorsVec4Array[dataOffset + j] = averageColor[j]
+				end
+			end
 		end
 	end
 	
 	-- color gets set when a team starts capturing
-	captureProgressBar = UIBar.new({color = {0, 0, 0}, type = UIBar.Type.CAPTURE, parent = uiBoxElement})
+	captureProgressBar = UIBar.new({allyTeam = false, parent = uiBoxElement})
+	
+	-- fill in extra space in uniform arrays
+	for i = numAllyTeams * 4 + 1, fragmentShaderMaxTeams * 4, 1 do
+		allyTeamColorsVec4Array[i] = 0
+	end
+	
+	--Initialize the shaders for the area outlines and populate the uniforms
+	mapAreaShader = gl.CreateShader({vertex = VFS.LoadFile(mapAreaVertexShaderPath),
+											fragment = VFS.LoadFile(mapAreaFragmentShaderPath):gsub("//##UBO##", gl.GetEngineUniformBufferDef(0) .. gl.GetEngineUniformBufferDef(1)),
+											uniformInt = {depthBuffer = 0, mapNormals = 1, numTeams = numAllyTeams, hillColorIndex = -1, --[[mapNormalsType = advGroundShading and 2 or (isSSMFMap and 1 or 0)]]},
+											uniformFloat = {hillArea = hillArea:getVec4Representation()}})
+	Spring.Log("KingOfTheHill_ui", "error", "Shader Log: \n" .. gl.GetShaderLog())
+	
+	uiMapAreasInstance = UIMapAreas.new()
+	
+	--Initialize the ally team colors UBO
+	allyTeamColorsUBO = gl.GetVBO(GL.UNIFORM_BUFFER, false)
+	allyTeamColorsUBO:Define(1, fragmentShaderMaxTeams)--seconds arg expects size in number of Vec4s
+	allyTeamColorsUBO:Upload(allyTeamColorsVec4Array)
 	
 	--Remove the call-in that cancels unpermitted build commands if building outside boxes is allowed
 	if buildOutsideBoxes then
@@ -955,16 +1038,8 @@ function widget:GameFrame(frame)
 	
 	if kingChanged then
 		local newKingAllyTeam = Spring.GetGameRulesParam("kingAllyTeam")
-		if newKingAllyTeam ~= kingAllyTeam then--Prevent unnecessary invalidation of UIBar data if the king is what we still think it is
-			if kingAllyTeam then
-				allyTeamProgressBars[kingAllyTeam]:setType(UIBar.Type.TEAM)
-			end
-			if newKingAllyTeam then
-				allyTeamProgressBars[newKingAllyTeam]:setType(UIBar.Type.KING_TEAM)
-			end
-			kingAllyTeam = newKingAllyTeam
-			uiMapAreasInstance:setKingAllyTeam(kingAllyTeam)
-		end
+		kingAllyTeam = newKingAllyTeam
+		uiMapAreasInstance:setKingAllyTeam(kingAllyTeam)
 		
 		for _, allyTeamId in ipairs(allyTeams) do
 			local kingTime = Spring.GetGameRulesParam("allyTeamKingTime" .. allyTeamId)
@@ -988,9 +1063,7 @@ function widget:GameFrame(frame)
 	if capturingTeamChanged then
 		capturingCompleteFrame = newCapturingCompleteFrame
 		capturingAllyTeam = Spring.GetGameRulesParam("capturingAllyTeam")
-		if capturingAllyTeam then
-			captureProgressBar:setColor(allyTeamColors[capturingAllyTeam])
-		end
+		captureProgressBar:setCapturingAllyTeam(capturingAllyTeam)
 	end
 	
 	local captureProgress = (capturingCompleteFrame - frame) / captureDelayFrames
@@ -1024,6 +1097,21 @@ function widget:DrawScreen()
 	
 	captureProgressBar:drawFrame()
 	
+	unbindAllyTeamColorsUBO()
+	useShader(0)
+	
+end
+
+function widget:DrawWorldPreUnit()
+	
+	gl.DepthTest(false)
+	gl.DepthMask(false)
+	
+	initializeStartBoxUniforms()
+	
+	uiMapAreasInstance:drawFrame()
+	
+	unbindAllyTeamColorsUBO()
 	useShader(0)
 	
 end
@@ -1032,8 +1120,12 @@ function widget:Shutdown()
 	
 	gl.DeleteShader(progressBarShader)
 	
-	--TODO delete map circle shader
+	gl.DeleteShader(mapAreaShader)
 	
 	--TODO remove WG API functions
 	
+end
+
+function widget:CameraRotationChanged()
+	--Spring.Log("KingOfTheHill_ui", "error", "Camera Rot Changed")
 end
