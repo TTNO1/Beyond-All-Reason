@@ -120,7 +120,9 @@ float getOutlineFactor(vec4 area, vec4 worldPos, float lineThickness, float blur
 // normalizedCameraUpVecXZ - a unit vector for the x and z components of the world space vector that points bottom to top across the screen
 float getLineThicknessFactor(float fragSizeX, float fragSizeY, vec2 outlineTangent, vec2 normalizedCameraRightVecXZ, vec2 normalizedCameraUpVecXZ)
 {
-	return (fragSizeY * abs(dot(outlineTangent, normalizedCameraRightVecXZ))) + (fragSizeX * abs(dot(outlineTangent, normalizedCameraUpVecXZ)));
+	float xComponent = fragSizeX * abs(dot(outlineTangent, normalizedCameraUpVecXZ));
+	float yComponent = fragSizeY * abs(dot(outlineTangent, normalizedCameraRightVecXZ));
+	return sqrt(xComponent * xComponent + yComponent * yComponent);
 }
 
 void main()
@@ -173,7 +175,7 @@ void main()
 	
 	//We want to scale the line thickness so it is a constant number of pixels instead of constant number of
 	//world units to prevent it from getting too thin and flickering when we zoom out.
-	//To do this, we calculate the size of the fragment in world coords.
+	//To do this, we calculate the size of the fragment in x,z world coords.
 	//If the camera were always looking straight down, the frag size would be given as follows.
 	float perpendicularFragSize = length(depthVec) / near;
 	//To account for the camera being angled or the terrain not being flat, we could divide the above quantity by the cosine of the
@@ -187,8 +189,8 @@ void main()
 	float intermediateDotProdY = dot(cameraUpVec, normalVec);
 	float cosThetaY = sqrt(1.0 - intermediateDotProdY * intermediateDotProdY);
 	//Horizontal and vertical sizes of the fragment in world coords
-	float fragSizeX = perpendicularFragSize / cosThetaX;
-	float fragSizeY = perpendicularFragSize / cosThetaY;	
+	float fragSizeX = normalVec.y * perpendicularFragSize / cosThetaX;
+	float fragSizeY = normalVec.y * perpendicularFragSize / cosThetaY;	
 	
 
 	//check each team outline and color in this fragment if it is on the outline
