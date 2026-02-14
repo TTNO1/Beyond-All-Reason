@@ -695,6 +695,7 @@ function UIBar:updateData()
 	self.dataInvalid = false
 end
 function UIBar:setProgress(progress)
+	progress = math.max(math.min(progress, 1), 0)
 	if math.abs(progress - self.progress.lastValue) * self.absWidth >= 1 then
 		self.progress:set(progress)
 		self:invalidateData()
@@ -900,6 +901,7 @@ function UITextTimer:updateData()
 	self.dataInvalid = false
 end
 function UITextTimer:setProgress(progress)
+	progress = math.max(math.min(progress, 1), 0)
 	local newTime = math.ceil((1 - progress) * self.totalTimeSecs)
 	if newTime ~= self.currentTimeSecs then
 		self.progress = progress
@@ -1189,7 +1191,6 @@ function widget:GameFrame(frame)
 	end
 	
 	local captureProgress = (capturingCompleteFrame - frame) / captureDelayFrames
-	captureProgress = math.max(captureProgress, 0)
 	if capturingCountingUp then
 		captureProgress = 1 - captureProgress
 	end
