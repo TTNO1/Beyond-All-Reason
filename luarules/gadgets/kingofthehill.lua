@@ -23,29 +23,27 @@
 --
 -- Name: King of the Hill
 -- Description: This gadget modifies the game behavior for the king of the hill game mode when it is enabled
--- Author: 'Saul Goodman
+-- Author: Saul Goodman
 --
 -----------------------------------------------------------------------------------------------
 --
 -- Documentation
 --
 -- This gadget adds the synced functionality for a King of the Hill game mode. In this game mode,
--- an ally team wins by spending a certain amount of time as "king. The hill is a
+-- an ally team wins by spending a certain amount of time as "king". The hill is a
 -- configurable circular or square cylinder on the map. An ally team becomes the king by
 -- being the only team with "capture-qualified units" in the hill for a configurable
 -- amount of time. Capture-qualified units are a set of units that are
 -- capable of capturing the hill. Additionally, any ally team
 -- is granted global line-of-sight (globalLOS) for the period that it spends as the king.
--- If the respective mod-option (Adv Options menu in lobby) is enabled, ally teams may only
--- build buildings inside of their starting area (the area in which they are allowed to spawn)
--- and the hill when they are king. Moreover, when an ally team loses the throne (transitions
--- from king to not-king) all buildings belonging to that team in the hill are exploded.
+-- If the respective mod-option is enabled, ally teams may only
+-- build buildings inside of their start box and the hill when they are king.
+-- Moreover, when an ally team loses the throne (transitions from king to not-king) all
+-- buildings belonging to that team in the hill are exploded.
 --
 -- The main game logic takes place in the gadget:GameFrame method. Every couple of frames,
 -- it checks where all capture-qualified units are and determines what the game state
 -- should be based on what teams are in and out of the hill.
---
--- Note: In all comments and documentation, "holding the hill" means the same thing as being the king.
 --
 -- There are a number of classes used in this gadget which are explained below.
 -- Set:
@@ -76,7 +74,7 @@ function gadget:GetInfo()
 	return {
 		name = "King of the Hill",
 		desc = "Adds functionality for King of the Hill game mode.",
-		author = "'Saul Goodman",
+		author = "Saul Goodman",
 		date = "2024",
 		license = "MIT",
 		layer = 0,
@@ -389,7 +387,7 @@ local allyTeamLives = {}
 -- Used to explode all buildings when the current king loses the throne
 local hillBuildings = Set.new()
 
--- the allyTeamId of the ally team that currently holds the hill or nil if no one holds it
+-- the allyTeamId of the ally team that is currently king or nil if there is no king
 local kingAllyTeam = RulesParamDataWrapper.new({paramName = "kingAllyTeam"})
 
 -- the frame number at which the current king initially became the king

@@ -1858,12 +1858,31 @@ local options = {
     },
     
     {
-        key     = "sub_header",
-        name    = "----------------------------------------------------------------------------------------------------------------------------------------",
-        desc    = "",
+        key 	= "pip",
+        name 	= "Picture-in-picture window",
+        desc 	= "Enables the picture-in-picture window showing a minimap-sized view of a chosen location.",
+        type 	= "bool",
         section = "options_experimental",
-        type    = "subheader",
-        def     =  true,
+        def 	= false,
+    },
+
+    {
+        key     = "pip_link",
+        name    = "Report Bugs",
+        desc    = "Thread to report bugs and suggest improvements.",
+        section = "options_experimental",
+        type    = "link",
+        link    = "https://discordapp.com/channels/549281623154229250/1453758532460478484",
+        width   = 200,
+        column  = 1.65,
+        linkheight = 325,
+        linkwidth = 350,
+    },
+    
+    {
+        key     = "sub_header",
+        section = "options_experimental",
+        type    = "separator",
     },
     
     {
@@ -1877,11 +1896,8 @@ local options = {
     
     {
         key     = "sub_header",
-        name    = "----------------------------------------------------------------------------------------------------------------------------------------",
-        desc    = "",
         section = "options_experimental",
-        type    = "subheader",
-        def     =  true,
+        type    = "separator",
     },
     
     {
@@ -1954,28 +1970,6 @@ local options = {
         type   	= "bool",
         section = "options_experimental",
         def  	= true,
-    },
-
-    {
-        key 	= "pip",
-        name 	= "Picture-in-picture window",
-        desc 	= "Enables the picture-in-picture window showing a minimap-sized view of a chosen location.",
-        type 	= "bool",
-        section = "options_experimental",
-        def 	= false,
-    },
-
-    {
-        key     = "pip_link",
-        name    = "Report Bugs",
-        desc    = "Thread to report bugs and suggest improvements.",
-        section = "options_experimental",
-        type    = "link",
-        link    = "https://discordapp.com/channels/549281623154229250/1453758532460478484",
-        width   = 200,
-        column  = 1.65,
-        linkheight = 325,
-        linkwidth = 350,
     },
 
     ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

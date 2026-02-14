@@ -1,4 +1,3 @@
----@diagnostic disable: unused-function
 -----------------------------------------------------------------------------------------------
 --
 -- Copyright 2024
@@ -23,8 +22,8 @@
 -----------------------------------------------------------------------------------------------
 --
 -- Name: King of the Hill
--- Description: This gadget modifies the game behavior for the king of the hill game mode when it is enabled
--- Author: 'Saul Goodman
+-- Description: This gadget adds the UI components for the king of the hill game mode when it is enabled
+-- Author: Saul Goodman
 --
 -----------------------------------------------------------------------------------------------
 --
@@ -32,12 +31,10 @@
 --
 -- This widget adds the unsynced UI functionality for a King of the Hill game mode. This
 -- widget adds a box to the stack of boxes in the bottom-right corner of the screen. The box
--- contains a progress bar with each ally team's color filling a portion of the progress bar
--- proportionate to the amount of time that they have been king. This widget also draws outlines
--- on the map around each team's starting box and the hill region.
--- TODO explain shaders and opengl once figured out
+-- contains a progress bar for each ally team indicating how close they are to winning. This
+-- widget also draws outlines on the map around each team's starting box and the hill region.
 --
--- Note: In all comments and documentation, "holding the hill" means the same thing as being the king.
+-- TODO explain shaders and opengl once figured out
 --
 -- There are a number of classes used in this widget which are explained below.
 -- Set:
@@ -59,7 +56,7 @@ function widget:GetInfo()
 	return {
 		name = "King of the Hill",
 		desc = "Adds UI for King of the Hill game mode.",
-		author = "'Saul Goodman",
+		author = "Saul Goodman",
 		date = "2025",
 		license = "MIT",
 		layer = 0,
@@ -79,6 +76,7 @@ local vsx, vsy--view size x and y
 local gl = gl
 local GL = GL
 local VFS = VFS
+local bit = bit
 
 local screenCopyManager = WG['screencopymanager']
 --local WG
@@ -180,6 +178,12 @@ local function distance(x1, z1, x2, z2)
 	return math.sqrt((x2-x1)^2 + (z2-z1)^2)
 end
 
+local function insertArrayIntoArray(valueArray, containerArray)
+	for _, value in ipairs(valueArray) do
+		table.insert(containerArray, value)
+	end
+end
+
 -- copied from https://stackoverflow.com/a/7615129
 local function splitStr(inputstr, sep)
 	if sep == nil then
@@ -210,84 +214,25 @@ local function dump(o)
 -- #endregion
 -- /////////////////////////////
 
--- #region Hill Area Classes
--- These classes define the hill area and provide general methods such as isInside(x,y) for various shapes (circle and square)
-
-local MapArea = {
-	mt = {}
-}
-MapArea.mt.__index = MapArea
-function MapArea.new(args)
-	args = args or {}
-	setmetatable(args, MapArea.mt)
-	return args
-end
-
-local RectMapArea = {
-	mt = {}
-}
-setmetatable(RectMapArea, MapArea.mt)
-RectMapArea.mt.__index = RectMapArea
-function RectMapArea.new(args)
-	if not args.left or not args.right or not args.top or not args.bottom then
-		error("Missing one or more arguments for new RectMapArea", 2)
-	end
-	args = MapArea.new(args)
-	setmetatable(args, RectMapArea.mt)
-	args.type = "rect"
-	args.centerX = (args.left + args.right) / 2
-	args.centerZ = (args.top + args.bottom) / 2
-	args.xSize = args.right - args.left
-	args.zSize = args.top - args.bottom
-	return args
-end
-function RectMapArea:isPointInside(x, z)
-	return x >= self.left and x <= self.right and z >= self.bottom and z <= self.top
-end
-function RectMapArea:isBuildingInside(x, z, sizeX, sizeZ)
-	local top, right, bottom, left = z + sizeZ/2, x + sizeX/2, z - sizeZ/2, x - sizeX/2
-	return top <= self.top and right <= self.right and bottom >= self.bottom and left >= self.left
-end
---Returns the Vec4 format of this area used in the map area shader
-function RectMapArea:getVec4Representation()
-	return {self.centerX, self.centerZ, self.xSize/2, self.zSize/2}
-end
-
-local CircleMapArea = {
-	mt = {}
-}
-setmetatable(CircleMapArea, MapArea.mt)
-CircleMapArea.mt.__index = CircleMapArea
-function CircleMapArea.new(args)
-	if not args.x or not args.z or not args.radius then
-		error("Missing one or more arguments for new CircleMapArea", 2)
-	end
-	args = MapArea.new(args)
-	setmetatable(args, CircleMapArea.mt)
-	args.type = "circle"
-	return args
-end
-function CircleMapArea:isPointInside(x, z)
-	return distance(x, z, self.x, self.z) <= self.radius
-end
-function CircleMapArea:isBuildingInside(x, z, sizeX, sizeZ)
-	local top, right, bottom, left = z + sizeZ/2, x + sizeX/2, z - sizeZ/2, x - sizeX/2
-	return self:isPointInside(left, top) and self:isPointInside(right, top) and self:isPointInside(right, bottom) and self:isPointInside(left, bottom)
-end
---Returns the Vec4 format of this area used in the map area shader
-function CircleMapArea:getVec4Representation()
-	return {self.x, self.z, self.radius, -1}
-end
-
--- #endregion
-
 -- #region Configuration Constants
 
 --Defines the maximum value of the coordinate system used in the hill area mod option
 local mapAreaScale = 200
 
+--Defines the maximum number of vertices that will be used to draw a map area outline
+local mapAreaMaxVertices = 190
+
+--Defines the desired spacing (in world coords) between each map area vertex provided the total number does not exceed the maximum above
+local mapAreaPreferredSpacing = 15
+
+--Defines the width of the map area outlines
+local mapAreaLineWidth = 1.5
+
+--Defines how much to add the the y coordinate of each vertex of the map area outlines
+local mapAreaLineVertexVerticalShift = 5
+
 --Defines the default hill area used if the mod option string is invalid
-local defaultHillArea = RectMapArea.new{left = 75*mapSizeX/mapAreaScale, right = 125*mapSizeX/mapAreaScale, top = 125*mapSizeZ/mapAreaScale, bottom = 75*mapSizeZ/mapAreaScale}
+local defaultHillAreaArgs = {left = 75*mapSizeX/mapAreaScale, right = 125*mapSizeX/mapAreaScale, top = 125*mapSizeZ/mapAreaScale, bottom = 75*mapSizeZ/mapAreaScale}
 
 --Defines the default width of the UI box if there are no boxes below it to go off of
 local defaultUIBoxWidth = 340
@@ -295,8 +240,8 @@ local defaultUIBoxWidth = 340
 --Defines the top and bottom padding on the box in pixels
 local uiBoxVerticalPadding = 10
 
---Defines the left coordinate of the progress bars relative to box width
-local progressBarLeft = 0.05
+--Defines the horizontal padding in the box relative to box width
+local uiBoxHorizontalPadding = 0.05
 
 --Defines the width of a team progress bar relative to box width
 local progressBarWidth = 0.7
@@ -309,6 +254,21 @@ local progressBarVerticalSpacing = 6
 
 --Deifnes the height of the capture progress bar in pixels
 local captureProgressBarHeight = 15
+
+--Defines the margin above the capture bar in pixels
+local captureProgressBarTopMargin = 15
+
+--Defines the spacing in between the timers and progress bars relative to box width
+local timerLeftMargin = 0.05
+
+--Defines the font size of the timers next to the progress bars
+local timerFontSize = 13
+
+--Defines the text color of the timers next to the progress bars
+local timerFontColor = {1, 1, 1, 1}
+
+--Defines the path to the font file for the text timers
+local timerFontPath = "fonts/Exo2-Regular.otf"
 
 --Progress bar shader file paths
 local progressBarVertexShaderPath = "LuaUI/Shaders/kingofthehillui.vert.glsl"
@@ -340,7 +300,7 @@ local hillArea
 -- whether or not players can build outside of their start area or the captured hill
 local buildOutsideBoxes
 
--- the total time needed as king to win
+-- the total time needed as king to win in milliseconds
 local winKingTime
 
 -- winKingTime in frames
@@ -372,9 +332,9 @@ local allyTeams = {}
 local allyTeamIndices = {}
 
 -- the number of ally teams
-local numAllyTeams = 0--TODO remove and replace with #allyTeams if not used frequently
+local numAllyTeams = 0
 
--- allyTeamId to RectMapArea defining the allyTeam's starting area (faster than calling Spring functions every time start area is needed)
+-- allyTeamId to RectMapArea defining the allyTeam's starting area
 local startBoxes = {}
 
 -- All game state variables below are only updated on an interval and may not exactly match the server at all times
@@ -416,9 +376,12 @@ local uiBoxPosition
 --The shaders for the progress bars
 local progressBarShader = gl.CreateShader({vertex = VFS.LoadFile(progressBarVertexShaderPath),
 												fragment = VFS.LoadFile(progressBarFragmentShaderPath)})
+Spring.Log("KingOfTheHill_ui", "error", "Shader Log: \n" .. gl.GetShaderLog())
 
 --The shaders for the area outlines
-local mapAreaShader
+local mapAreaShader = gl.CreateShader({vertex = VFS.LoadFile(mapAreaVertexShaderPath):gsub("//##UBO##", gl.GetEngineUniformBufferDef(0)),
+											fragment = VFS.LoadFile(mapAreaFragmentShaderPath)})
+Spring.Log("KingOfTheHill_ui", "error", "Shader Log: \n" .. gl.GetShaderLog())
 
 --A UBO containing an array of ally team colors
 local allyTeamColorsUBO
@@ -432,8 +395,14 @@ local allyTeamProgressBars = {}
 -- The UIBar for the progress bar indicating the capture delay
 local captureProgressBar
 
--- The UIMapAreas instance used for rendering start boxes and the hill
-local uiMapAreasInstance;
+-- allyTeamId to UITextTimer object for that team's progress timer
+local allyTeamProgressTimers = {}
+
+-- The UITextTimer for the timer indicating the capture delay
+local captureProgressTimer
+
+-- The font used for the text timers
+local timerFont
 
 -- Used to update the position of the UI box multiple times after the screen is resized
 -- since the ordering of the size updates from the lower widgets is unknown to me
@@ -481,6 +450,18 @@ local function unbindAllyTeamColorsUBO()
 	allyTeamColorsUBOBound = false
 end
 
+--Prevent changing line width if already set to desired value
+local currentLineWidth;
+local function setLineWidth(width)
+	if currentLineWidth ~= width then
+		gl.LineWidth(width)
+		currentLineWidth = width
+	end
+end
+local function resetLineWidth()
+	currentLineWidth = -1
+end
+
 -- Gets the depth buffer based on various conditions
 -- The logic in this function was copied from Beherith's Start Polygons widget
 local advGroundShading = select(2, Spring.HaveAdvShading())
@@ -507,22 +488,6 @@ local function getMapNormalsTexture()
 	
 	--The other textures are too fine and cause artifacts
 	return "$normals"
-end
-
---Initializes the start box uniforms in the map area fragment shader if they have not been initialized yet
---This is called in the draw callin so that we can activate the shader to set the uniforms
---We can't use the shader params of gl.CreateShader because it does not support an array of vectors
-local startBoxUniformsInitialized = false
-local function initializeStartBoxUniforms()
-	if startBoxUniformsInitialized then
-		return
-	end
-	useShader(mapAreaShader)
-	for index, allyTeam in ipairs(allyTeams) do
-		local location = gl.GetUniformLocation(mapAreaShader, "startAreas[" .. (index - 1) .. "]")
-		gl.Uniform(location, table.unpack(startBoxes[allyTeam]:getVec4Representation()))
-	end
-	startBoxUniformsInitialized = true
 end
 
 -- UI Classes
@@ -566,6 +531,10 @@ end
 function UniformValue:set(newValue)
 	self.value = newValue
 	self.invalid = not self:equalsLastValue(newValue)
+end
+function UniformValue:setAndUpdate(newValue)
+	self:set(newValue)
+	self:update()
 end
 function UniformValue:equalsLastValue(newValue)
 	if self.type == UniformValue.Type.VECTOR or self.type == UniformValue.Type.ARRAY or self.type == UniformValue.Type.MATRIX then
@@ -676,20 +645,22 @@ end
 -- A class for each UI progress bar
 local UIBar = {
 	mt = {},
-	capturingTeamIndex = UniformValue.new({name = "capturingTeamIndex", shader = progressBarShader, value = allyTeamIndices[capturingAllyTeam] or -1, type = UniformValue.Type.INT})
+	ProgressBarData = UniformValue.new({name = "progressBarData", shader = progressBarShader, value = 0, type = UniformValue.Type.INT}),
+	Flags = {CAPTURE_BAR = 0x00800000}
 }
 setmetatable(UIBar, UIElement.mt)
 UIBar.mt.__index = UIBar
 function UIBar.new(args)
 	args = UIElement.new(args)
-	if args.allyTeam == nil then
+	args.flags = args.flags or 0
+	if not args.allyTeam and (not args.flags or math.bit_and(args.flags, UIBar.Flags.CAPTURE_BAR) == 0) then
 		error("Missing one or more arguments for new UIBar", 2)
 	end
 	setmetatable(args, UIBar.mt)
-	args.allyTeamIndex = (allyTeamIndices[args.allyTeam] or fragmentShaderMaxTeams + 1) - 1
+	args.allyTeamIndex = (allyTeamIndices[args.allyTeam] or 1) - 1
 	args.shader = args.shader or progressBarShader
-	args.allyTeamIndexUniformLocation = gl.GetUniformLocation(args.shader, "allyTeamIndex")
-	args.progress = UniformValue.new({name = "progress[" .. args.allyTeamIndex .. "]", shader = args.shader, value = args.progress or 0, type = UniformValue.Type.FLOAT})
+	local progressIndex = math.bit_and(args.flags, UIBar.Flags.CAPTURE_BAR) ~= 0 and fragmentShaderMaxTeams or args.allyTeamIndex
+	args.progress = UniformValue.new({name = "progress[" .. progressIndex .. "]", shader = args.shader, value = args.progress or 0, type = UniformValue.Type.FLOAT})
 	args.vbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
 	args.vbo:Define(4, {{id = 0, name = "position", size = 2}, {id = 1, name = "uv", size = 2}})
 	args.vao = gl.GetVAO()
@@ -699,7 +670,7 @@ end
 function UIBar:draw()
 	useShader(self.shader)
 	bindAllyTeamColorsUBO()
-	gl.UniformInt(self.allyTeamIndexUniformLocation, self.allyTeamIndex)
+	UIBar.ProgressBarData:setAndUpdate(math.bit_or(self.allyTeamIndex, self.flags))
 	self.vao:DrawArrays(GL.TRIANGLE_STRIP)
 end
 function UIBar:updatePosition()
@@ -721,7 +692,6 @@ function UIBar:updatePosition()
 end
 function UIBar:updateData()
 	self.progress:update()
-	UIBar.capturingTeamIndex:update()
 	self.dataInvalid = false
 end
 function UIBar:setProgress(progress)
@@ -730,63 +700,212 @@ function UIBar:setProgress(progress)
 		self:invalidateData()
 	end
 end
-function UIBar:setCapturingAllyTeam(capturingAllyTeamId)
-	local newCapturingTeamIndex = (allyTeamIndices[capturingAllyTeamId] or 1) - 1
-	UIBar.capturingTeamIndex:set(newCapturingTeamIndex)
-	self:invalidateData()
+function UIBar:setAllyTeam(allyTeamId)
+	self.allyTeamIndex = (allyTeamIndices[allyTeamId] or 1) - 1
 end
 
 -- A class for map area outlines rendered on the world
-local UIMapAreas = {
-	mt = {}
+local UIMapArea = {
+	mt = {},
+	MapAreaData = UniformValue.new({name = "mapAreaData", shader = mapAreaShader, value = 0, type = UniformValue.Type.INT}),
+	Flags = {HILL_AREA = 0x00800000}
 }
-setmetatable(UIMapAreas, UIElement.mt)
-UIMapAreas.mt.__index = UIMapAreas
-function UIMapAreas.new(args)
+setmetatable(UIMapArea, UIElement.mt)
+UIMapArea.mt.__index = UIMapArea
+function UIMapArea.new(args)
 	args = UIElement.new(args)
-	setmetatable(args, UIMapAreas.mt)
+	args.flags = args.flags or 0
+	if not args.allyTeam and (not args.flags or math.bit_and(args.flags, UIMapArea.Flags.HILL_AREA) == 0) then
+		error("Missing one or more arguments for new UIMapArea", 2)
+	end
+	setmetatable(args, UIMapArea.mt)
+	args.allyTeamIndex = (allyTeamIndices[args.allyTeam] or fragmentShaderMaxTeams + 1) - 1
+	args.lineWidth = args.lineWidth or mapAreaLineWidth
 	args.shader = args.shader or mapAreaShader
-	args.hillColorIndex = UniformValue.new({name = "hillColorIndex", shader = args.shader, value = args.hillColorIndex or -1, type = UniformValue.Type.INT})
 	args.vbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
-	args.vbo:Define(4, {{id = 0, name = "position", size = 2}, {id = 1, name = "uv", size = 2}, {id = 2, name = "nd", size = 2}})
+	args.vbo:Define(#args.xzVertices, {{id = 0, name = "position", size = 3}})
 	args.vao = gl.GetVAO()
 	args.vao:AttachVertexBuffer(args.vbo)
 	return args
 end
-function UIMapAreas:draw()
+function UIMapArea:draw()
 	useShader(self.shader)
-	gl.Texture(0, getDepthBufferTexture())
-	gl.Texture(1, getMapNormalsTexture())
 	bindAllyTeamColorsUBO()
-	self.vao:DrawArrays(GL.TRIANGLE_STRIP)
-	gl.Texture(0, false)
-	gl.Texture(1, false)
+	setLineWidth(self.lineWidth)
+	UIMapArea.MapAreaData:setAndUpdate(math.bit_or(self.allyTeamIndex, self.flags))
+	self.vao:DrawArrays(GL.LINE_LOOP)
 end
-function UIMapAreas:updatePosition()
-	self:computeAbsoluteRect()
-	--Progress bar region clip positions
-	local left = convertToClipSpace(self.absLeft, nil)
-	local right = convertToClipSpace(self.absRight, nil)
-	local top = convertToClipSpace(nil, self.absTop)
-	local bottom = convertToClipSpace(nil, self.absBottom)
-	--Triangle strip vertices with uv and NDC
-	local vertices = {
-		left, top, 0, 1, -1, 1,
-		left, bottom, 0, 0, -1, -1,
-		right, top, 1, 1, 1, 1,
-		right, bottom, 1, 0, 1, -1
-	}
+function UIMapArea:updatePosition()
+	local vertices = {}
+	for index, xzVertex in ipairs(self.xzVertices) do
+		local offset = index * 3 - 2
+		local x = xzVertex[1]
+		local z = xzVertex[2]
+		vertices[offset] = x
+		vertices[offset + 1] = Spring.GetGroundHeight(x, z) + mapAreaLineVertexVerticalShift
+		vertices[offset + 2] = z
+	end
 	self.vbo:Upload(vertices)
 	self.positionInvalid = false
 end
-function UIMapAreas:updateData()
-	self.hillColorIndex:update()
+function UIMapArea:updateData()
 	self.dataInvalid = false
 end
-function UIMapAreas:setKingAllyTeam(kingAllyTeamId)
-	local newHillColorIndex = (allyTeamIndices[kingAllyTeamId] or 0) - 1
-	self.hillColorIndex:set(newHillColorIndex)
-	self:invalidateData()
+function UIMapArea:setAllyTeam(allyTeamId)
+	self.allyTeamIndex = (allyTeamIndices[allyTeamId] or fragmentShaderMaxTeams + 1) - 1
+end
+function UIMapArea:isRectIntersectingOutline(x1, z1, x2, z2)
+	local corners = {x1, z1, x1, z2, x2, z1, x2, z2}
+	local isInside = false
+	local isOutside = false
+	for i = 1, 7, 2 do
+		local isPointInside = self:isPointInside(corners[i], corners[i + 1])
+		isInside = isInside or isPointInside
+		isOutside = isOutside or not isPointInside
+		if isInside and isOutside then
+			return true
+		end
+	end
+	return false
+end
+
+local RectMapArea = {
+	mt = {}
+}
+setmetatable(RectMapArea, UIMapArea.mt)
+RectMapArea.mt.__index = RectMapArea
+function RectMapArea.new(args)
+	if not args.left or not args.right or not args.top or not args.bottom then
+		error("Missing one or more arguments for new RectMapArea", 2)
+	end
+	args.type = "rect"
+	args.centerX = (args.left + args.right) / 2
+	args.centerZ = (args.top + args.bottom) / 2
+	args.xSize = args.right - args.left
+	args.zSize = args.top - args.bottom
+	
+	--Populate the XZ vertex coordinates
+	local left, right, top, bottom, xSize, zSize = args.left, args.right, args.top, args.bottom, args.xSize, args.zSize
+	local numVertices = math.min(math.ceil((xSize * 2 + zSize * 2) / mapAreaPreferredSpacing), mapAreaMaxVertices)
+	local numXPoints = math.floor((numVertices - 4) * (xSize / (xSize + zSize)) / 2)
+	local numZPoints = math.floor(((numVertices - 4) - (numXPoints * 2)) / 2)
+	local xDelim = (xSize + 1) / numXPoints
+	local zDelim = (zSize + 1) / numZPoints
+	local topSide = {{left, top}}--the vertices along the top edge starting with the top left corner moving to the right not including the top right corner
+	local bottomSide = {{right, bottom}}--the vertices along the bottom edge starting with the bottom right corner moving to the left not including the bottom left corner
+	for i = 1, numXPoints, 1 do
+		table.insert(topSide, {left + (xDelim * i), top})
+		table.insert(bottomSide, {right - (xDelim * i), bottom})
+	end
+	local rightSide = {{right, top}}--the vertices along the right edge starting with the top right corner moving down not including the bottom right corner
+	local leftSide = {{left, bottom}}--the vertices along the left edge starting with the bottom left corner moving up not including the top left corner
+	for i = 1, numZPoints, 1 do
+		table.insert(rightSide, {right, top - (zDelim * i)})
+		table.insert(leftSide, {left, bottom + (zDelim * i)})
+	end
+	local xzVertices = {}
+	insertArrayIntoArray(topSide, xzVertices)
+	insertArrayIntoArray(rightSide, xzVertices)
+	insertArrayIntoArray(bottomSide, xzVertices)
+	insertArrayIntoArray(leftSide, xzVertices)
+	args.xzVertices = xzVertices
+	
+	args = UIMapArea.new(args)
+	setmetatable(args, RectMapArea.mt)
+	return args
+end
+function RectMapArea:isPointInside(x, z)
+	return x >= self.left and x <= self.right and z >= self.bottom and z <= self.top
+end
+function RectMapArea:isBuildingInside(x, z, sizeX, sizeZ)
+	local top, right, bottom, left = z + sizeZ/2, x + sizeX/2, z - sizeZ/2, x - sizeX/2
+	return top <= self.top and right <= self.right and bottom >= self.bottom and left >= self.left
+end
+
+local CircleMapArea = {
+	mt = {}
+}
+setmetatable(CircleMapArea, UIMapArea.mt)
+CircleMapArea.mt.__index = CircleMapArea
+function CircleMapArea.new(args)
+	if not args.x or not args.z or not args.radius then
+		error("Missing one or more arguments for new CircleMapArea", 2)
+	end
+	args.type = "circle"
+	args.circumference = 2 * math.pi * args.radius
+	
+	--Populate the XZ vertex coordinates
+	args.xzVertices = {}
+	local numVertices = math.min(math.ceil(args.circumference / mapAreaPreferredSpacing), mapAreaMaxVertices)
+	local angleDelim = 2 * math.pi / numVertices
+	for i = 0, 2 * math.pi, angleDelim do
+		table.insert(args.xzVertices, {args.x + (args.radius * math.cos(i)), args.z + (args.radius * math.sin(i))})
+	end
+	
+	args = UIMapArea.new(args)
+	setmetatable(args, CircleMapArea.mt)
+	return args
+end
+function CircleMapArea:isPointInside(x, z)
+	return distance(x, z, self.x, self.z) <= self.radius
+end
+function CircleMapArea:isBuildingInside(x, z, sizeX, sizeZ)
+	local top, right, bottom, left = z + sizeZ/2, x + sizeX/2, z - sizeZ/2, x - sizeX/2
+	return self:isPointInside(left, top) and self:isPointInside(right, top) and self:isPointInside(right, bottom) and self:isPointInside(left, bottom)
+end
+
+-- A class for the timer next to each progress bar
+local UITextTimer = {
+	mt = {}
+}
+setmetatable(UITextTimer, UIElement.mt)
+UITextTimer.mt.__index = UITextTimer
+function UITextTimer.new(args)
+	args = UIElement.new(args)
+	if not args.totalTimeSecs then
+		error("Missing one or more arguments for new UITextTimer", 2)
+	end
+	setmetatable(args, UITextTimer.mt)
+	args.fontSize = args.fontSize or timerFontSize
+	args.color = args.color or timerFontColor
+	args.currentTimeSecs = math.ceil(args.totalTimeSecs)
+	return args
+end
+function UITextTimer:draw()
+	gl.CallList(self.displayList)
+end
+function UITextTimer:updatePosition()
+	self:computeAbsoluteRect()
+	self:updateData()
+	self.positionInvalid = false
+end
+function UITextTimer:updateData()
+	gl.DeleteList(self.displayList)
+	local minutes = math.floor(self.currentTimeSecs / 60)
+	local seconds = self.currentTimeSecs % 60
+	local timeString
+	if minutes > 0 then
+		local secondsString = tostring(seconds)
+		if seconds < 10 then
+			secondsString = "0" .. secondsString
+		end
+		timeString = tostring(minutes) .. ":" .. secondsString
+	else
+		timeString = tostring(seconds) .. "s"
+	end
+	self.displayList = gl.CreateList(function ()
+		timerFont:SetTextColor(self.color)
+		timerFont:Print(timeString, self.absLeft, self.absBottom + self.absHeight / 2, self.fontSize * uiBoxPosition.scale, "v")
+	end)
+	self.dataInvalid = false
+end
+function UITextTimer:setProgress(progress)
+	local newTime = math.ceil((1 - progress) * self.totalTimeSecs)
+	if newTime ~= self.currentTimeSecs then
+		self.progress = progress
+		self.currentTimeSecs = newTime
+		self:invalidateData()
+	end
 end
 
 --///////////////
@@ -797,12 +916,12 @@ end
 --TODO add WG api functions (GetPosition)
 
 
--- Parses the string modoption that defines the hill area and returns a MapArea object
+-- Parses the string modoption that defines the hill area and returns args for a MapArea constructor
 local function parseAreaString(string)
 	local words = splitStr(string)
 	if #words < 4 then
 		Spring.Log("KingOfTheHill_ui", "error", "Not enough arguments in area string. Resorting to default area box.")
-		return defaultHillArea
+		return defaultHillAreaArgs
 	end
 	local shape = words[1]
 	local nums = {}
@@ -813,22 +932,22 @@ local function parseAreaString(string)
 		numArgumentCount = 3
 	else
 		Spring.Log("KingOfTheHill_ui", "error", "Invalid shape in area string. Resorting to default area box.")
-		return defaultHillArea
+		return defaultHillAreaArgs
 	end
 	
 	for i = 1, numArgumentCount, 1 do
 		local num = tonumber(words[i+1])
 		if not num or num < 0 or num > mapAreaScale then
 			Spring.Log("KingOfTheHill_ui", "error", "Invalid number in area string. Resorting to default area box.")
-			return defaultHillArea
+			return defaultHillAreaArgs
 		end
 		nums[i] = num
 	end
 	
 	if shape == "rect" then
-		return RectMapArea.new({left = nums[1]*mapSizeX/mapAreaScale, top = nums[2]*mapSizeZ/mapAreaScale, right = nums[3]*mapSizeX/mapAreaScale, bottom = nums[4]*mapSizeZ/mapAreaScale})
+		return {type = shape, left = nums[1]*mapSizeX/mapAreaScale, top = nums[2]*mapSizeZ/mapAreaScale, right = nums[3]*mapSizeX/mapAreaScale, bottom = nums[4]*mapSizeZ/mapAreaScale}
 	elseif shape == "circle" then
-		return CircleMapArea.new({x = nums[1]*mapSizeX/mapAreaScale, z = nums[2]*mapSizeZ/mapAreaScale, radius = nums[3]*math.max(mapSizeX, mapSizeZ)/mapAreaScale})
+		return {type = shape, x = nums[1]*mapSizeX/mapAreaScale, z = nums[2]*mapSizeZ/mapAreaScale, radius = nums[3]*math.max(mapSizeX, mapSizeZ)/mapAreaScale}
 	end
 	
 end
@@ -846,7 +965,10 @@ function widget:Initialize()
 	end
 	
 	--Get and parse KOTH related mod options
-	hillArea = parseAreaString(modOptions.kingofthehillarea)
+	local hillAreaArgs = parseAreaString(modOptions.kingofthehillarea)
+	hillAreaArgs.allyTeam = false
+	hillAreaArgs.flags = UIMapArea.Flags.HILL_AREA
+	hillArea = hillAreaArgs.type == "circle" and CircleMapArea.new(hillAreaArgs) or RectMapArea.new(hillAreaArgs)
 	buildOutsideBoxes = not modOptions.kingofthehillbuildoutsideboxes
 	winKingTime = (tonumber(modOptions.kingofthehillwinkingtime) or 10) * 60 * 1000
 	winKingTimeFrames = fps * winKingTime / 1000
@@ -871,7 +993,6 @@ function widget:Initialize()
 	--Compute average color for ally team
 	--Populate allyTeamProgressBars
 	--Populate ally team colors UBO array
-	--Populate map area shader start box uniform array
 	for index, allyTeamId in ipairs(Spring.GetAllyTeamList()) do
 		if allyTeamId ~= gaiaAllyTeamID then
 			table.insert(allyTeams, allyTeamId)
@@ -880,7 +1001,7 @@ function widget:Initialize()
 			allyTeamKingTime[allyTeamId] = 0
 			
 			local left, bottom, right, top = Spring.GetAllyTeamStartBox(allyTeamId)
-			local startBox = RectMapArea.new{left = left, top = top, right = right, bottom = bottom}
+			local startBox = RectMapArea.new{left = left, top = top, right = right, bottom = bottom, allyTeam = allyTeamId}
 			startBoxes[allyTeamId] = startBox
 			
 			local red, green, blue = 0, 0, 0
@@ -902,6 +1023,7 @@ function widget:Initialize()
 			allyTeamColors[allyTeamId] = averageColor
 			
 			allyTeamProgressBars[allyTeamId] = UIBar.new({allyTeam = allyTeamId, parent = uiBoxElement})
+			allyTeamProgressTimers[allyTeamId] = UITextTimer.new({totalTimeSecs = winKingTime / 1000, parent = uiBoxElement})
 			
 			if index <= fragmentShaderMaxTeams then
 				local dataOffset = (index - 1) * 4
@@ -913,21 +1035,13 @@ function widget:Initialize()
 	end
 	
 	-- color gets set when a team starts capturing
-	captureProgressBar = UIBar.new({allyTeam = false, parent = uiBoxElement})
+	captureProgressBar = UIBar.new({flags = UIBar.Flags.CAPTURE_BAR, parent = uiBoxElement})
+	captureProgressTimer = UITextTimer.new({totalTimeSecs = captureDelay / 1000, parent = uiBoxElement})
 	
 	-- fill in extra space in uniform arrays
 	for i = numAllyTeams * 4 + 1, fragmentShaderMaxTeams * 4, 1 do
 		allyTeamColorsVec4Array[i] = 0
 	end
-	
-	--Initialize the shaders for the area outlines and populate the uniforms
-	mapAreaShader = gl.CreateShader({vertex = VFS.LoadFile(mapAreaVertexShaderPath),
-											fragment = VFS.LoadFile(mapAreaFragmentShaderPath):gsub("//##UBO##", gl.GetEngineUniformBufferDef(0) .. gl.GetEngineUniformBufferDef(1)),
-											uniformInt = {depthBuffer = 0, mapNormals = 1, numTeams = numAllyTeams, hillColorIndex = -1, --[[mapNormalsType = advGroundShading and 2 or (isSSMFMap and 1 or 0)]]},
-											uniformFloat = {hillArea = hillArea:getVec4Representation()}})
-	Spring.Log("KingOfTheHill_ui", "error", "Shader Log: \n" .. gl.GetShaderLog())
-	
-	uiMapAreasInstance = UIMapAreas.new()
 	
 	--Initialize the ally team colors UBO
 	allyTeamColorsUBO = gl.GetVBO(GL.UNIFORM_BUFFER, false)
@@ -981,7 +1095,8 @@ local function updateUIBoxPosition()
 	local scaledBarHeight = math.ceil(progressBarHeight * scale)
 	local scaledBarVerticalSpacing = math.ceil(progressBarVerticalSpacing * scale)
 	local scaledCaptureBarHeight = math.ceil(captureProgressBarHeight * scale)
-	local scaledUIBoxHeight = ((scaledBarHeight + scaledBarVerticalSpacing) * numAllyTeams) + (2 * scaledBoxVerticalPadding) + scaledCaptureBarHeight
+	local scaledCaptureBarTopMargin = math.ceil(captureProgressBarTopMargin * scale)
+	local scaledUIBoxHeight = ((scaledBarHeight + scaledBarVerticalSpacing) * numAllyTeams) + (2 * scaledBoxVerticalPadding) - scaledBarVerticalSpacing + scaledCaptureBarTopMargin + scaledCaptureBarHeight
 	
 	uiBoxPosition = {
 		left = left,
@@ -1000,13 +1115,18 @@ local function updateUIBoxPosition()
 	local relativeBoxVerticalPadding = scaledBoxVerticalPadding / uiBoxPosition.height
 	
 	local barTopRelCoord = relativeBoxVerticalPadding
-	for allyTeamId, uiBar in pairs(allyTeamProgressBars) do
-		uiBar:setPos({top = barTopRelCoord, bottom = 1 - (barTopRelCoord + relativeBarHeight), left = progressBarLeft, right = 1 - (progressBarLeft + progressBarWidth)})
+	for _, allyTeamId in ipairs(allyTeams) do
+		local uiBar = allyTeamProgressBars[allyTeamId]
+		local uiTimer = allyTeamProgressTimers[allyTeamId]
+		uiBar:setPos({top = barTopRelCoord, bottom = 1 - (barTopRelCoord + relativeBarHeight), left = uiBoxHorizontalPadding, right = 1 - (uiBoxHorizontalPadding + progressBarWidth)})
+		uiTimer:setPos({top = uiBar.top, bottom = uiBar.bottom, left = uiBoxHorizontalPadding + progressBarWidth + timerLeftMargin, right = 1 - uiBoxHorizontalPadding})
 		barTopRelCoord = barTopRelCoord + relativeBarHeight + relativeBarVerticalSpacing
 	end
 	
 	local captureBarRelativeHeight = scaledCaptureBarHeight / uiBoxPosition.height
-	captureProgressBar:setPos({top = barTopRelCoord, bottom = 1 - (barTopRelCoord + captureBarRelativeHeight), left = progressBarLeft, right = 1 - (progressBarLeft + progressBarWidth)})
+	local captureBarRelativeTopMargin = scaledCaptureBarTopMargin / uiBoxPosition.height
+	captureProgressBar:setPos({top = barTopRelCoord - relativeBarVerticalSpacing + captureBarRelativeTopMargin, bottom = relativeBoxVerticalPadding, left = uiBoxHorizontalPadding, right = 1 - (uiBoxHorizontalPadding + progressBarWidth)})
+	captureProgressTimer:setPos({top = captureProgressBar.top, bottom = captureProgressBar.bottom, left = uiBoxHorizontalPadding + progressBarWidth + timerLeftMargin, right = 1 - uiBoxHorizontalPadding})
 	
 end
 
@@ -1014,8 +1134,8 @@ end
 function widget:ViewResize(vs_x, vs_y)
 	vsx = vs_x
 	vsy = vs_y
+	timerFont = WG.fonts.getFont(timerFontPath)
 	--WG = _G.WG TODO localize flow ui
-	uiMapAreasInstance:setPos({right = vsx, top = vsy})
 	-- Call here as well as in widget:DrawScreen because I have no idea the order
 	-- of other widgets resizing so we want the best chance of getting it right
 	updateUIBoxPosition()
@@ -1039,13 +1159,14 @@ function widget:GameFrame(frame)
 	if kingChanged then
 		local newKingAllyTeam = Spring.GetGameRulesParam("kingAllyTeam")
 		kingAllyTeam = newKingAllyTeam
-		uiMapAreasInstance:setKingAllyTeam(kingAllyTeam)
+		hillArea:setAllyTeam(kingAllyTeam)
 		
 		for _, allyTeamId in ipairs(allyTeams) do
 			local kingTime = Spring.GetGameRulesParam("allyTeamKingTime" .. allyTeamId)
 			allyTeamKingTime[allyTeamId] = kingTime
 			local progress = math.abs(kingTime) / winKingTimeFrames--TODO handle disqualified teams (negative time)
 			allyTeamProgressBars[allyTeamId]:setProgress(progress)
+			allyTeamProgressTimers[allyTeamId]:setProgress(progress)
 		end
 		kingStartFrame = newKingStartFrame
 	end
@@ -1053,6 +1174,7 @@ function widget:GameFrame(frame)
 	if kingAllyTeam then
 		local newKingProgress = (allyTeamKingTime[kingAllyTeam] + (frame - kingStartFrame)) / winKingTimeFrames
 		allyTeamProgressBars[kingAllyTeam]:setProgress(newKingProgress)
+		allyTeamProgressTimers[kingAllyTeam]:setProgress(newKingProgress)
 	end
 	
 	local newCapturingCompleteFrame = Spring.GetGameRulesParam("capturingCompleteFrame")
@@ -1063,7 +1185,7 @@ function widget:GameFrame(frame)
 	if capturingTeamChanged then
 		capturingCompleteFrame = newCapturingCompleteFrame
 		capturingAllyTeam = Spring.GetGameRulesParam("capturingAllyTeam")
-		captureProgressBar:setCapturingAllyTeam(capturingAllyTeam)
+		captureProgressBar:setAllyTeam(capturingAllyTeam)
 	end
 	
 	local captureProgress = (capturingCompleteFrame - frame) / captureDelayFrames
@@ -1072,8 +1194,22 @@ function widget:GameFrame(frame)
 		captureProgress = 1 - captureProgress
 	end
 	captureProgressBar:setProgress(captureProgress)
+	captureProgressTimer:setProgress(captureProgress)
+end
+
+function widget:UnsyncedHeightMapUpdate(x1, z1, x2, z2)--TODO consider using height texture in vertex shader
+	local squareSize = Game.squareSize
+	x1, z1, x2, z2 = x1 * squareSize, z1 * squareSize, x2 * squareSize, z2 * squareSize
 	
-	--TODO test if updating vbo is faster than making new one
+	for _, startArea in pairs(startBoxes) do
+		if startArea:isRectIntersectingOutline(x1, z1, x2, z2) then
+			startArea:invalidatePosition()
+		end
+	end
+	
+	if hillArea:isRectIntersectingOutline(x1, z1, x2, z2) then
+		hillArea:invalidatePosition()
+	end
 end
 
 -- No documentation. This is the call-in that many other widgets use to draw UI.
@@ -1091,7 +1227,13 @@ function widget:DrawScreen()
 	
 	uiBoxElement:drawFrame()
 	
-	for allyTeamId, uiBar in pairs(allyTeamProgressBars) do
+	for _, uiTextTimer in pairs(allyTeamProgressTimers) do
+		uiTextTimer:drawFrame()
+	end
+	
+	captureProgressTimer:drawFrame()
+	
+	for _, uiBar in pairs(allyTeamProgressBars) do
 		uiBar:drawFrame()
 	end
 	
@@ -1104,13 +1246,16 @@ end
 
 function widget:DrawWorldPreUnit()
 	
-	gl.DepthTest(false)
+	gl.DepthTest(GL.LEQUAL)
 	gl.DepthMask(false)
 	
-	initializeStartBoxUniforms()
+	for _, mapArea in pairs(startBoxes) do
+		mapArea:drawFrame()
+	end
 	
-	uiMapAreasInstance:drawFrame()
+	hillArea:drawFrame()
 	
+	resetLineWidth()
 	unbindAllyTeamColorsUBO()
 	useShader(0)
 	
@@ -1124,8 +1269,4 @@ function widget:Shutdown()
 	
 	--TODO remove WG API functions
 	
-end
-
-function widget:CameraRotationChanged()
-	--Spring.Log("KingOfTheHill_ui", "error", "Camera Rot Changed")
 end
