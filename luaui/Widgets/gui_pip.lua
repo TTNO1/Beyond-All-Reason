@@ -1,22 +1,97 @@
-if not Spring.GetModOptions().pip then --and not Spring.GetModOptions().allowuserwidgets then
-	return
+local devUI = Spring.Utilities.ShowDevUI()
+local isSinglePlayer = Spring.Utilities.Gametype.IsSinglePlayer()
+local isSpectator = Spring.GetSpectatingState()
+local pipEnabled = Spring.GetModOptions().pip
+
+-- When pipEnabled: always load
+-- When not pipEnabled: only load if devUI AND (spectator OR singleplayer)
+if not pipEnabled then
+	if not devUI then
+		return
+	end
+	if not isSinglePlayer and not isSpectator then
+		return
+	end
+end
+
+pipNumber = pipNumber or 1
+
+-- Special mode flags
+local isMinimapMode = (pipNumber == 0)  -- When pipNumber == 0, act as minimap replacement
+local minimapModeMinZoom = nil  -- Calculated zoom to fit entire map (only used in minimap mode)
+local pipModeMinZoom = nil  -- Dynamic min zoom calculated from PIP/map dimensions (normal PIP mode)
+
+-- Minimap mode API upvalues (updated each frame, avoids per-frame closure allocations)
+local minimapApiNormLeft, minimapApiNormRight, minimapApiNormBottom, minimapApiNormTop = 0, 1, 1, 0
+local minimapApiZoomLevel = 1
+local minimapApiGetNormalizedVisibleArea = function()
+	return minimapApiNormLeft, minimapApiNormRight, minimapApiNormBottom, minimapApiNormTop
+end
+local minimapApiGetZoomLevel = function()
+	return minimapApiZoomLevel
+end
+
+-- Helper function to get effective zoom minimum (accounts for minimap mode)
+local function GetEffectiveZoomMin()
+	if isMinimapMode and minimapModeMinZoom then
+		return minimapModeMinZoom
+	end
+	return pipModeMinZoom or 0.04
+end
+
+-- Helper function to get effective zoom maximum (accounts for minimap mode)
+local function GetEffectiveZoomMax()
+	-- In minimap mode, still allow zooming IN (higher zoom values)
+	return 0.95  -- Default config.zoomMax value
+end
+
+-- Helper function to check if at minimum zoom (fully zoomed out) in minimap mode
+local function IsAtMinimumZoom(zoom)
+	if isMinimapMode and minimapModeMinZoom then
+		return zoom <= minimapModeMinZoom * 1.02  -- 2% tolerance for floating point and smooth zooming
+	end
+	return false
 end
 
 function widget:GetInfo()
 	return {
 		name      = "Picture-in-Picture",
 		desc      = "",
-		author    = "Floris, (original by Niobium in 2010)",
+		author    = "Floris", -- (original by Niobium created in 2010)
 		version   = "2.0",
 		date      = "October 2025",
 		license   = "GNU GPL, v2 or later",
-		layer     = -990010,
+		layer     = -(99020-pipNumber),
 		enabled   = true,
 		handler   = true,
 	}
 end
+----------------------------------------------------------------------------------------------------
+-- Keyboard config for hotkey display
+----------------------------------------------------------------------------------------------------
+local keyConfig = VFS.Include("luaui/configs/keyboard_layouts.lua")
 
-pipNumber = pipNumber or 1
+----------------------------------------------------------------------------------------------------
+-- GL4 instanced rendering support (for efficient icon drawing with many units)
+-- Uses raw VBO + direct array writes for zero per-frame allocations.
+----------------------------------------------------------------------------------------------------
+local currentKeyboardLayout = Spring.GetConfigString("KeyboardLayout", "qwerty")
+
+-- Helper function to get a formatted hotkey string for an action
+local function getActionHotkey(action)
+	local hotkeys = Spring.GetActionHotKeys(action)
+	if not hotkeys or #hotkeys == 0 then
+		return ""
+	end
+	-- Find shortest hotkey
+	local key = hotkeys[1]
+	for i = 2, #hotkeys do
+		if hotkeys[i]:len() < key:len() then
+			key = hotkeys[i]
+		end
+	end
+	return keyConfig.sanitizeKey(key, currentKeyboardLayout):gsub("%+", " + ")
+end
 
 ----------------------------------------------------------------------------------------------------
 -- Todo
@@ -36,7 +111,7 @@ local config = {
 	minPanelSize = 330,
 	maxPanelSizeVsy = 0.4,  -- Maximum size as fraction of vertical screen resolution
 	buttonSize = 50,
-
+	
 	-- Zoom settings
 	zoomWheel = 1.22,
 	zoomRate = 15,
@@ -48,27 +123,28 @@ local config = {
 	zoomMin = 0.04,
 	zoomMax = 0.95,
 	zoomFeatures = 0.2,
-	zoomProjectileDetail = 0.2,
-	zoomExplosionDetail = 0.1,
-
+	zoomFeaturesFadeRange = 0.06,  -- Zoom range over which features fade in/out
+	zoomProjectileDetail = 0.12,
+	zoomExplosionDetail = 0.12,  -- Legacy, now using graduated visibility
+	drawExplosions = true,  -- Separate from projectiles
+	
 	-- Feature and overlay settings
 	hideEnergyOnlyFeatures = false,
 	showLosOverlay = true,
 	showLosRadar = true,
 	losOverlayOpacity = 0.6,
-	showPipFps = false,
 	allowCommandsWhenSpectating = false,  -- Allow giving commands as spectator when god mode is enabled
-
+	
 	-- Rendering settings
 	iconRadius = 40,
 	showUnitpics = true,      -- Show unitpics instead of icons when zoomed in
 	unitpicZoomThreshold = 0.7, -- Zoom level at which to switch to unitpics (higher = more zoomed in)
 	leftButtonPansCamera = false,
 	maximizeSizemult = 1.25,
-	screenMargin = 0.05,
+	screenMargin = 0.045,
 	drawProjectiles = true,
 	zoomToCursor = true,
-	mapEdgeMargin = 0.15,
+	mapEdgeMargin = 0,
 	showButtonsOnHoverOnly = true,
 	switchInheritsTracking = false,
 	switchTransitionTime = 0.15,
@@ -76,17 +152,46 @@ local config = {
 	showWorldIcon = true,  -- Show minimize/maximize icon in world view at PIP camera location
 	showWorldIconForSpectators = false,  -- Also show world icon when spectating (default off)
 	cancelPlayerTrackingOnPan = true,  -- Cancel player camera tracking when trying to pan or ALT+drag
-
+	pipMinimapCorner = 3,  -- Corner for pip minimap: 1=bottom-left, 2=bottom-right, 3=top-left, 4=top-right
+	minimapHeightPercent = 0.12,  -- Minimap height as percent of PIP height (maintains aspect ratio)
+	minimapHoverHeightPercent = 0.15,  -- Minimap height when hovering over PIP
+	
 	-- Performance settings
-	pipMinUpdateRate = 30,
-	pipMaxUpdateRate = 120,
+	showPipFps = false,
+	useGL4Icons = true,  -- Use GL4 instanced rendering for icons (much faster with many units, falls back to legacy if unavailable)
+	contentResolutionScale = 2,  -- Render texture at this multiple of PIP size (1 = 1:1, 2 = 2x resolution for (marginally) sharper content)
+	smoothCameraMargin = 0.05,  -- Oversized texture margin for expensive layers (units, features, projectiles)
+	smoothCameraMarginCheap = 0.15,  -- Oversized texture margin for cheap layers (ground, water, LOS) — larger since rendering is cheap
+	pipFloorUpdateRate = 10,	-- Minimum update rate for PIP content when performance is poor (will be smoothly applied based on measured frame times)
+	pipMinUpdateRate = 30,		-- Minimum update rate for PIP content when zoomed out
+	pipMaxUpdateRate = 120,		-- Maximum update rate for PIP content when zoomed in
 	pipZoomThresholdMin = 0.15,
 	pipZoomThresholdMax = 0.4,
-	pipTargetDrawTime = 0.003,
+	pipTargetDrawTime = 0.002,
 	pipPerformanceAdjustSpeed = 0.1,
-
+	pipFrameTimeThreshold = 0.005,  -- threshold before starting to lower FPS
+	pipFrameTimeHistorySize = 8,  -- Number of frames to average
+	
 	radarWobbleSpeed = 1,
 	CMD_AREA_MEX = GameCMD and GameCMD.AREA_MEX or 10000,
+
+	-- Middle-click teleport settings (click without drag moves world camera to clicked position)
+	middleClickTeleport = true,  -- Enable middle-click to teleport world camera
+	middleClickZoomMin = 0.2,    -- Maximum zoom in for teleport (lower = more zoomed in)
+	middleClickZoomMax = 0.95,    -- Maximum zoom out for teleport (higher = more zoomed out)
+	middleClickZoomOffset = -0.18,  -- Teleport slightly more zoomed out than PIP (0 = same as PIP)
+	minimapMiddleClickZoomMin = 0.2,  -- auto zoom in to this zoom level
+	minimapMiddleClickZoomMax = 0.95,  -- auto zoom out to this zoom level
+	
+	-- Minimap mode settings (when pipNumber == 0)
+	minimapModeMaxHeight = 0.32,  -- Default max height (will be overridden by user's minimap config if available)
+	minimapModeMaxWidth = 0.26,   -- Max width as fraction of screen width
+	minimapModeScreenMargin = 0,  -- No margin in minimap mode (edge-to-edge)
+	minimapModeShowButtons = false,  -- Hide buttons in minimap mode
+	minimapModeStartMinimized = false,  -- Don't start minimized in minimap mode
+	minimapModeHideMoveResize = true,  -- Hide move and resize buttons in minimap mode
+	showSpectatorPings = true,  -- Show map pings from spectators on the PIP minimap
+	showViewRectangleOnMinimap = false,  -- Show the PIP view rectangle on the engine minimap
 }
 
 -- State variables
@@ -112,8 +217,8 @@ local render = {
 	UiElement = nil,
 	RectRoundOutline = nil,
 	dim = {},  -- Panel dimensions: left, right, bottom, top
-	world = {},  -- World coordinate boundaries
-	ground = { view = {}, coord = {} },  -- Ground texture view and texture coordinates
+	world = {l=0, r=0, b=0, t=0},  -- World coordinate boundaries
+	ground = { view = {l=0, r=0, b=0, t=0}, coord = {l=0, r=1, b=1, t=0} },  -- Ground texture view and texture coordinates
 	minModeDlist = nil,  -- Display list for minimized mode button
 	mapRulerDlist = nil,  -- Display list for map ruler marks
 	mapRulerCacheKey = nil,  -- Cache key to detect when ruler needs regeneration
@@ -172,7 +277,16 @@ local pipR2T = {
 	contentCurrentUpdateRate = config.pipMinUpdateRate,
 	contentLastWidth = 0,
 	contentLastHeight = 0,
+	contentTexWidth = 0,  -- Actual oversized texture width in pixels
+	contentTexHeight = 0,  -- Actual oversized texture height in pixels
+	contentWcx = 0,  -- Camera X when contentTex was rendered
+	contentWcz = 0,  -- Camera Z when contentTex was rendered
+	contentZoom = 0,  -- Zoom when contentTex was rendered
+	contentRotation = 0,  -- Rotation when contentTex was rendered
 	contentLastDrawTime = 0,  -- Last measured draw time for performance monitoring
+	contentDrawTimeHistory = {},  -- Ring buffer of last 6 frame times
+	contentDrawTimeHistoryIndex = 0,  -- Current index in ring buffer
+	contentDrawTimeAverage = 0,  -- Average of last 6 frame times
 	contentPerformanceFactor = 1.0,  -- Multiplier applied to update rate based on performance (1.0 = no adjustment)
 	frameBackgroundTex = nil,
 	frameButtonsTex = nil,
@@ -197,6 +311,27 @@ local pipR2T = {
 	rulerTex = nil,
 	rulerNeedsUpdate = true,
 	rulerCacheKey = nil,  -- Cache key to detect significant changes
+	-- Tracked player overlay cache
+	resbarTextDlist = nil,
+	resbarTextLastUpdate = 0,
+	resbarTextUpdateRate = 0.5,  -- Update resource text at 2 FPS
+	resbarTextLastPlayerID = nil,
+	playerNameDlist = nil,
+	playerNameLastPlayerID = nil,
+	playerNameLastName = nil,
+	-- Smooth camera: oversized units texture for camera-transition interpolation
+	unitsTex = nil,  -- Oversized FBO for expensive content (units, features, projectiles, etc.)
+	unitsTexWidth = 0,  -- Actual texture width in pixels
+	unitsTexHeight = 0,  -- Actual texture height in pixels
+	unitsLastWidth = 0,  -- Last PIP width used to create unitsTex
+	unitsLastHeight = 0,  -- Last PIP height used to create unitsTex
+	unitsWorld = { l = 0, r = 0, b = 0, t = 0 },  -- World coordinates when unitsTex was rendered
+	unitsZoom = 0,  -- Camera zoom when unitsTex was rendered
+	unitsRotation = 0,  -- Minimap rotation when unitsTex was rendered
+	unitsWcx = 0,  -- Camera X position when unitsTex was rendered
+	unitsWcz = 0,  -- Camera Z position when unitsTex was rendered
+	unitsNeedsUpdate = true,  -- Flag to force unitsTex re-render
+	unitsLastUpdateTime = 0,  -- Last time unitsTex was rendered
 }
 render.minModeDlist = nil  -- Display list for minimized mode button
 
@@ -209,6 +344,8 @@ local interactionState = {
 	panToggleMode = false,
 	middleMousePressed = false,
 	middleMouseMoved = false,
+	middleMousePressX = 0,
+	middleMousePressY = 0,
 	leftMousePressed = false,
 	rightMousePressed = false,
 	areCentering = false,
@@ -249,12 +386,19 @@ local interactionState = {
 	worldIconHoverStartTime = 0,  -- Time when hover started (for 1s delay)
 	worldIconTooltipDisplayStartTime = 0,  -- Time when tooltip started displaying (for 1s count)
 	worldIconTooltipShownThisHover = false,  -- Flag to only count tooltip once per hover
-	worldIconDragging = false,  -- Whether we're dragging via world icon to move PIP window
+	worldIconDragging = false,  -- Whether we're dragging via world icon to move PIP camera
 	worldIconClickStartX = 0,  -- Screen X when we started clicking world icon
 	worldIconClickStartY = 0,  -- Screen Y when we started clicking world icon
+	worldIconDragStartWorldX = nil,  -- World X under cursor when drag started
+	worldIconDragStartWorldZ = nil,  -- World Z under cursor when drag started
+	worldIconDragStartCamX = nil,  -- Camera X when drag started
+	worldIconDragStartCamZ = nil,  -- Camera Z when drag started
 	minimizeButtonDragging = false,  -- Whether we're dragging via minimize button to move PIP window
 	minimizeButtonClickStartX = 0,  -- Screen X when we started clicking minimize button
 	minimizeButtonClickStartY = 0,  -- Screen Y when we started clicking minimize button
+	pipMinimapBounds = nil,  -- {l, r, b, t} bounds of pip-minimap when visible, nil otherwise
+	pipMinimapDragging = false,  -- Whether we're dragging the pip-minimap to move camera
+	worldCameraDragging = false,  -- Whether we're left-click dragging to move the world camera (leftButtonPansCamera mode)
 }
 
 -- Consolidated misc state
@@ -270,13 +414,29 @@ local miscState = {
 	worldIconTooltipShownThisGame = 0,  -- How many times tooltip shown this game
 	worldIconTooltipShownTotal = 0,  -- How many times tooltip shown ever (persistent)
 	hadSavedConfig = false,
+	savedGameID = nil,  -- GameID from saved config for new game detection
 	hasOpenedPIPThisGame = false,  -- Whether PIP has been opened/maximized at least once this game
 	worldIconLockedX = nil,  -- Locked world icon X position while hovering
 	worldIconLockedZ = nil,  -- Locked world icon Z position while hovering
 	pipUnits = {},
 	pipFeatures = {},
 	mapMarkers = {},  -- Table to store active map markers
+	minimapWidgetDisabled = false,  -- Whether we've disabled the old minimap widget (for minimap mode)
+	minimapCameraRestored = false,  -- Whether minimap camera state was restored from config (for luaui reload)
+	crashingUnits = {},  -- Units that are crashing (no icon should be drawn)
 }
+
+-- Ghost building cache: enemy buildings seen but no longer in direct LOS
+-- Position is static (buildings don't move), drawn from cache when out of LOS
+-- Mirrors engine minimap ghost building behavior at last known position
+-- key = unitID, value = { defID = unitDefID, x = worldX, z = worldZ, teamID = teamID }
+local ghostBuildings = {}
+
+-- Building position caches: buildings never move, avoiding per-frame GetUnitBasePosition
+-- Shared across GL4 and legacy draw paths
+local ownBuildingPosX = {}  -- [unitID] = worldX
+local ownBuildingPosZ = {}  -- [unitID] = worldZ
+
 -- Consolidated drawing data
 local drawData = {
 	iconTeam = {},
@@ -286,12 +446,15 @@ local drawData = {
 	iconSelected = {},
 	iconBuildProgress = {},
 	iconUnitID = {},
+	iconCount = 0,  -- Explicit count (avoids # operator overhead with large arrays)
 	radarBlobX = {},
 	radarBlobY = {},
 	radarBlobTeam = {},
 	radarBlobUdef = {},  -- Store unit def ID if known
 	radarBlobUnitID = {},  -- Store unit ID for wobble calculation
+	radarBlobCount = 0,  -- Explicit count
 	trackedIconIndices = {},
+	trackedCount = 0,  -- Explicit count
 	hoveredUnitID = nil,
 	lastSelectionboxEnabled = nil,
 }
@@ -313,11 +476,103 @@ local pools = {
 	buildPositions = {}, -- Reused for CalculateBuildDragPositions
 	buildsByTexture = {}, -- Reused for DrawQueuedBuilds texture grouping
 	buildCountByTexture = {}, -- Reused for DrawQueuedBuilds counts
-	savedDim = {l=0, r=0, b=0, t=0}, -- Reused for UpdateR2TContent dimension backup
-	savedGround = {view={l=0,r=0,b=0,t=0}, coord={l=0,r=0,b=0,t=0}}, -- Reused for UpdateR2TContent ground backup
+	savedDim = {l=0, r=0, b=0, t=0}, -- Reused for R2T dimension backup
 	projectileColor = {1, 0.5, 0, 1}, -- Reused for DrawProjectile default color
 	trackingMerge = {}, -- Reused for tracking unit merge operations
 	trackingTempSet = {}, -- Reused for tracking unit deduplication
+	-- Icon sorting pools
+	structureDefaults = {}, -- Reused for sorting structure default icons
+	groundDefaults = {}, -- Reused for sorting ground default icons
+	commanderDefaults = {}, -- Reused for sorting commander default icons
+	elevatedDefaults = {}, -- Reused for sorting elevated default icons
+	elevatedKeyCache = {}, -- Cache for texture .. "_elevated" strings to avoid per-frame allocations
+	commanderKeyCache = {}, -- Cache for texture .. "_commander" strings to avoid per-frame allocations
+	structureKeyCache = {}, -- Cache for texture .. "_structure" strings to avoid per-frame allocations
+	iconCost = {}, -- Reused for per-icon cost lookup during sorting
+	trackedByTexture = {}, -- Reused for tracked units texture grouping
+	-- Radar and projectile pools
+	knownRadarUnits = {}, -- Reused for radar units with known types
+	unknownRadarUnits = {}, -- Reused for radar units with unknown types
+	radarIconsByTexture = {}, -- Reused for grouping radar icons by texture
+	activeTrails = {}, -- Reused for tracking active missile trails
+	-- Texture size tracking pools
+	textureSizes = {}, -- Reused for tracking icon counts per texture
+	unitpicSizes = {}, -- Reused for tracking unitpic counts per texture
+}
+
+-- Command queue waypoint cache: avoids calling GetUnitCommands every frame.
+-- GetUnitCommands allocates ~60 tables per unit per call (outer + cmd + params tables),
+-- which causes massive GC pressure. Caching and only refreshing every N frames eliminates this.
+local CMD_CACHE_INTERVAL = 6  -- refresh commands every 6 draw frames (~100ms at 60fps)
+local cmdQueueCache = {
+	waypoints = {},       -- [unitID] = { n = wpCount, [1]={x,z,cmdID}, [2]={x,z,cmdID}, ... }
+	counter = 0,          -- draw-call counter for throttling
+	lastUnitHash = 0,     -- quick hash for unit list change detection
+}
+
+----------------------------------------------------------------------------------------------------
+-- GL4 Instanced Icon Rendering State
+----------------------------------------------------------------------------------------------------
+-- GPU-driven icon rendering: replaces the CPU-heavy DrawUnit+DrawIcons pipeline with a single
+-- instanced draw call via a texture atlas + VBO + geometry shader.
+-- Benefits: eliminates per-icon texture switches, per-icon draw calls, and most per-unit API calls.
+local GL4_INSTANCE_STEP = 12    -- floats per icon instance (3 x vec4)
+local GL4_MAX_INSTANCES = 16384  -- pre-allocated capacity (covers 16k units without resize)
+local GL4_LAYER_STRUCTURE = 0   -- structures drawn first (bottom)
+local GL4_LAYER_GROUND = 1      -- ground mobile units
+local GL4_LAYER_COMMANDER = 2   -- commanders above ground
+local GL4_LAYER_AIR = 3         -- air units drawn last (top)
+local gl4Icons = {
+	enabled = false,          -- Set true after successful init
+	atlas = nil,              -- Texture atlas handle (all icon bitmaps packed)
+	atlasUVs = {},            -- [bitmap_path] = {u0, v0, u1, v1} (UV rect in atlas, Y-flipped)
+	defaultUV = nil,          -- UV for PipBlip fallback icon
+	vbo = nil,                -- Raw GL VBO (no InstanceVBOTable overhead)
+	vao = nil,                -- VAO with VBO attached
+	shader = nil,             -- Compiled GLSL shader program
+	uniformLocs = {},         -- Cached uniform locations
+	unitDefCache = {},        -- [unitID] = unitDefID (lazy-populated, cleared on unit death/give)
+	unitTeamCache = {},       -- [unitID] = teamID (lazy-populated, cleared on unit give)
+	unitDefLayer = {},        -- [unitDefID] = layer (0=structure,1=ground,2=commander,3=air) — built once at init
+	instanceData = nil,       -- Pre-allocated flat float array (GL4_MAX_INSTANCES * GL4_INSTANCE_STEP)
+	maxInstances = GL4_MAX_INSTANCES,
+}
+
+-- Cached factors for WorldToPipCoords (performance optimization)
+-- Declared here (before GL4 primitive code) so GL4 helper functions can close over them.
+local worldToPipScaleX = 1
+local worldToPipScaleZ = 1
+local worldToPipOffsetX = 0
+local worldToPipOffsetZ = 0
+
+-- GL4 Primitive Rendering (explosions, projectiles, beams, command lines)
+local GL4_LINE_STEP = 6       -- floats per vertex: worldX, worldZ, r, g, b, a
+local GL4_LINE_MAX = 16384    -- max vertices (8192 line segments)
+local GL4_CIRCLE_STEP = 12    -- floats per instance: 3 x vec4
+local GL4_CIRCLE_MAX = 2048   -- max circle instances
+local GL4_QUAD_STEP = 12      -- floats per instance: 3 x vec4
+local GL4_QUAD_MAX = 4096     -- max quad instances
+
+local gl4Prim = {
+	enabled = false,
+	-- Circles (explosions, plasma, flame, lightning impacts)
+	circles = {
+		vbo = nil, vao = nil, shader = nil,
+		data = nil, count = 0,
+		uniformLocs = {},
+	},
+	-- Quads (missiles, blasters)
+	quads = {
+		vbo = nil, vao = nil, shader = nil,
+		data = nil, count = 0,
+		uniformLocs = {},
+	},
+	-- Lines by width category (each has own VBO/VAO, shared shader)
+	glowLines = { vbo = nil, vao = nil, data = nil, count = 0 },   -- thick (beam/lightning glow)
+	coreLines = { vbo = nil, vao = nil, data = nil, count = 0 },   -- medium (beam/lightning core)
+	normLines = { vbo = nil, vao = nil, data = nil, count = 0 },   -- thin (trails, commands)
+	lineShader = nil,
+	lineUniformLocs = {},
 }
 
 -- Consolidated cache tables
@@ -348,6 +603,8 @@ local cache = {
 	canMove = {},
 	canFly = {},
 	isBuilding = {},
+	isCommander = {},
+	unitCost = {},
 	-- Combat properties
 	canAttack = {},
 	maxIconShatters = 20,
@@ -355,9 +612,12 @@ local cache = {
 	weaponIsBlaster = {},
 	weaponIsPlasma = {},
 	weaponIsMissile = {},
+	weaponIsStarburst = {},
 	weaponIsLightning = {},
 	weaponIsFlame = {},
 	weaponIsParalyze = {},
+	weaponIsAA = {},
+	missileTrails = {},  -- Stores trail positions for missiles {[pID] = {positions = {{x,z,time},...}, lastUpdate = time}}
 	weaponSize = {},
 	weaponRange = {},
 	weaponThickness = {},
@@ -367,6 +627,7 @@ local cache = {
 }
 
 local gameTime = 0 -- Accumulated game time (pauses when game is paused)
+local wallClockTime = 0 -- Wall-clock time (always advances, even when paused)
 
 local unitOutlineList = nil
 local radarDotList = nil
@@ -380,7 +641,8 @@ local seismicPingDlists = {
 	innerOutlines = {},
 }
 local gameHasStarted
-local gaiaAllyTeamID = select(6, Spring.GetTeamInfo(Spring.GetGaiaTeamID()))
+local gaiaTeamID = Spring.GetGaiaTeamID()
+local gaiaAllyTeamID = select(6, Spring.GetTeamInfo(gaiaTeamID))
 
 -- Command colors
 local cmdColors = {
@@ -436,7 +698,23 @@ local positionCmds = {
 -- Speedups
 ----------------------------------------------------------------------------------------------------
 
+-- String function speedups (critical for inner loops)
+local strFind = string.find
+local strGsub = string.gsub
+
+-- Icon sorting comparator (defined once, uses upvalues set before sort)
+-- Sorts by unit cost (ascending = cheap first, expensive drawn on top), then Y, then unitID
+local sortIconY, sortIconUnitID, sortIconCost
+local function iconSortComparator(a, b)
+	local ca, cb = sortIconCost[a], sortIconCost[b]
+	if ca ~= cb then return ca < cb end
+	local ya, yb = sortIconY[a], sortIconY[b]
+	if ya ~= yb then return ya < yb end
+	return sortIconUnitID[a] < sortIconUnitID[b]
+end
+
 -- GL constants
+local GL_LINE_SMOOTH = 0x0B20  -- OpenGL GL_LINE_SMOOTH enum value
 local glConst = {
 	LINE_STRIP = GL.LINE_STRIP,
 	LINES = GL.LINES,
@@ -512,8 +790,11 @@ local mapInfo = {
 	voidWater = voidWater
 }
 mapInfo.minGroundHeight, mapInfo.maxGroundHeight = Spring.GetGroundExtremes()
-mapInfo.hasWater = mapInfo.minGroundHeight < 0
-mapInfo.isLava = mapInfo.hasWater and Spring.Lava.isLavaMap
+local waterIsLava = Spring.GetModOptions().map_waterislava
+mapInfo.isLava = Spring.Lava.isLavaMap or (waterIsLava and waterIsLava ~= 0 and waterIsLava ~= "0")
+mapInfo.hasWater = mapInfo.minGroundHeight < 0 or mapInfo.isLava
+mapInfo.dynamicWaterLevel = nil  -- current water/lava level (nil = static sea level = 0)
+mapInfo.lastCheckedWaterLevel = nil  -- for change detection
 
 
 ----------------------------------------------------------------------------------------------------
@@ -522,8 +803,9 @@ mapInfo.isLava = mapInfo.hasWater and Spring.Lava.isLavaMap
 local buttons = {
 	{
 		texture = 'LuaUI/Images/pip/PipCopy.png',
-		tooltip = Spring.I18N('ui.pip.copy'),
+		tooltipKey = 'ui.pip.copy',
 		command = 'pip_copy',
+		shortcut = 'Alt + Q',
 		OnPress = function()
 				local sizex, sizez = Spring.GetWindowGeometry()
 				local _, pos = Spring.TraceScreenRay(sizex/2, sizez/2, true)
@@ -551,8 +833,9 @@ local buttons = {
 	},
 	{
 		texture = 'LuaUI/Images/pip/PipSwitch.png',
-		tooltip = Spring.I18N('ui.pip.switch'),
+		tooltipKey = 'ui.pip.switch',
 		command = 'pip_switch',
+		shortcut = 'Shift + Q',
 		OnPress = function()
 				local sizex, sizez = Spring.GetWindowGeometry()
 				local _, pos = Spring.TraceScreenRay(sizex/2, sizez/2, true)
@@ -631,9 +914,10 @@ local buttons = {
 	},
 	{
 		texture = 'LuaUI/Images/pip/PipT.png',
-		tooltip = Spring.I18N('ui.pip.track'),
-		tooltipActive = Spring.I18N('ui.pip.untrack'),
+		tooltipKey = 'ui.pip.track',
+		tooltipActiveKey = 'ui.pip.untrack',
 		command = 'pip_track',
+		shortcut = 'Alt + A',
 		OnPress = function()
 			local selectedUnits = Spring.GetSelectedUnits()
 			if #selectedUnits > 0 then
@@ -679,8 +963,8 @@ local buttons = {
 	},
 	{
 		texture = 'LuaUI/Images/pip/PipView.png',
-		tooltip = Spring.I18N('ui.pip.view'),
-		tooltipActive = Spring.I18N('ui.pip.unview'),
+		tooltipKey = 'ui.pip.view',
+		tooltipActiveKey = 'ui.pip.unview',
 		command = 'pip_view',
 		OnPress = function()
 			state.losViewEnabled = not state.losViewEnabled
@@ -696,8 +980,8 @@ local buttons = {
 	},
 	{
 		texture = 'LuaUI/Images/pip/PipCam.png',
-		tooltip = Spring.I18N('ui.pip.camera'),
-		tooltipActive = Spring.I18N('ui.pip.uncamera'),
+		tooltipKey = 'ui.pip.camera',
+		tooltipActiveKey = 'ui.pip.uncamera',
 		command = 'pip_trackplayer',
 		OnPress = function()
 			if interactionState.trackingPlayerID then
@@ -706,7 +990,7 @@ local buttons = {
 				pipR2T.frameNeedsUpdate = true
 			else
 				local _, _, isSpec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
-
+				
 				if isSpec then
 					-- Spectator: Track team leader (keep existing behavior)
 					local myTeamID = Spring.GetMyTeamID()
@@ -745,11 +1029,11 @@ local buttons = {
 								break
 							end
 						end
-
+						
 						-- Cycle to next teammate
 						currentIndex = (currentIndex % #teammates) + 1
 						local targetPlayerID = teammates[currentIndex]
-
+						
 						-- Double-check we're not tracking ourselves
 						if targetPlayerID ~= Spring.GetMyPlayerID() then
 							interactionState.trackingPlayerID = targetPlayerID
@@ -766,9 +1050,9 @@ local buttons = {
 	},
 	{
 		texture = 'LuaUI/Images/pip/PipMove.png',
-		tooltip = Spring.I18N('ui.pip.move'),
+		tooltipKey = 'ui.pip.move',  -- No command, no shortcut
 		command = nil,
-		OnPress = function()
+		OnPress = function() 
 			interactionState.areDragging = true
 		end
 	},
@@ -796,10 +1080,10 @@ local losShaderCode = {
 			float losValue = texture2D(losTex, texCoord).r;
 			// Red channel of radar texture: Radar coverage
 			float radarValue = texture2D(radarTex, texCoord).r;
-
+			
 			// Calculate grey based on LOS
 			float grey = baseValue + losValue * losScale;
-
+			
 			// If showRadar enabled, darken areas that have neither LOS nor radar
 			if (showRadar > 0.5) {
 				if (losValue < 0.2 && radarValue < 0.2) {
@@ -835,15 +1119,22 @@ local waterShaderCode = {
 	fragment = [[
 		uniform sampler2D heightTex;
 		uniform vec4 waterColor;
+		uniform float waterLevel;  // water/lava surface level in elmos (world height units)
 		varying vec2 texCoord;
 		void main() {
-			float height = texture2D(heightTex, texCoord).r;
-
-			// Heightmap: black (0.0) = water, white (1.0) = land
-			// Apply water color where heightmap is black (water areas)
-			float waterAmount = 1.0 - height;
-
-			gl_FragColor = vec4(waterColor.rgb, waterColor.a * waterAmount * 0.05);
+			float height = texture2D(heightTex, texCoord).r;  // raw height in elmos
+			
+			// Depth below water/lava surface (positive = submerged)
+			float depth = waterLevel - height;
+			
+			// Smooth transition over 10 elmos depth for gradual coverage
+			float waterAmount = clamp(depth / 10.0, 0.0, 1.0);
+			
+			// Use waterColor.a to control overall intensity:
+			// Low alpha (0.5 = normal water) gets subtle tinting via * 0.05
+			// High alpha (1.0 = void/lava) gets strong coverage
+			float alphaScale = mix(0.05, 1.0, waterColor.a);
+			gl_FragColor = vec4(waterColor.rgb, waterAmount * alphaScale);
 		}
 	]],
 	uniformInt = {
@@ -851,14 +1142,773 @@ local waterShaderCode = {
 	},
 	uniformFloat = {
 		waterColor = {0, 0.04, 0.25, 0.5},
+		waterLevel = 0,
 	},
 }
 
 local teamColors = {}
+local teamAllyTeamCache = {}  -- teamID -> allyTeamID mapping (avoids per-unit GetTeamInfo calls)
 local teamList = Spring.GetTeamList()
 for i = 1, #teamList do
 	local tID = teamList[i]
 	teamColors[tID] = {Spring.GetTeamColor(tID)}
+	teamAllyTeamCache[tID] = select(6, Spring.GetTeamInfo(tID, false))
+end
+
+----------------------------------------------------------------------------------------------------
+-- GL4 Icon Shader + Initialization
+----------------------------------------------------------------------------------------------------
+-- GLSL shader for instanced icon rendering: points → quads via geometry shader
+local gl4IconShaderCode = {
+	vertex = [[
+#version 330
+layout(location = 0) in vec4 worldPos_size;  // worldX, worldZ, iconSizeScale, flags (bitfield)
+layout(location = 1) in vec4 atlasUV;         // u0, v0, u1, v1
+layout(location = 2) in vec4 colorFlags;      // r, g, b, wobblePhase
+
+uniform vec2 wtp_scale;      // worldToPipScaleX, worldToPipScaleZ
+uniform vec2 wtp_offset;     // worldToPipOffsetX, worldToPipOffsetZ
+uniform vec2 ndcScale;       // 2/fboW, 2/fboH
+uniform vec2 rotSC;          // sin(mapRotation), cos(mapRotation)
+uniform vec2 rotCenter;      // rotation center in PIP pixels
+uniform float iconBaseSize;  // iconRadiusZoomDistMult (PIP pixels)
+uniform float gameTime;      // for radar wobble (pauses with game)
+uniform float wallClockTime;  // for blink/pulse animations (always advances)
+
+out vec4 v_atlasUV;
+out vec4 v_color;
+out vec2 v_halfSizeNDC;
+
+void main() {
+// Decode bitfield flags: bit0=radar(1), bit1=takeable(2), bit2=stunned(4)
+float flags = worldPos_size.w;
+float isRadar    = mod(floor(flags      ), 2.0);  // bit 0
+float isTakeable = mod(floor(flags / 2.0 ), 2.0);  // bit 1
+float isStunned  = mod(floor(flags / 4.0 ), 2.0);  // bit 2
+
+// World to PIP pixel coordinates
+vec2 pipPos;
+pipPos.x = wtp_offset.x + worldPos_size.x * wtp_scale.x;
+pipPos.y = wtp_offset.y + worldPos_size.y * wtp_scale.y;
+
+// Radar wobble (only for radar-only icons)
+float wobbleAmp = iconBaseSize * 0.3 * isRadar;
+float phase = colorFlags.w;
+pipPos.x += sin(gameTime * 3.0 + phase) * wobbleAmp;
+pipPos.y += cos(gameTime * 2.7 + phase * 1.3) * wobbleAmp;
+
+// Map rotation around center
+vec2 d = pipPos - rotCenter;
+pipPos = rotCenter + vec2(
+d.x * rotSC.y - d.y * rotSC.x,
+d.x * rotSC.x + d.y * rotSC.y
+);
+
+// PIP pixels to NDC
+gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
+
+v_atlasUV = atlasUV;
+
+// Start with base color and alpha
+vec3 col = colorFlags.rgb;
+float alpha = 1.0 - 0.25 * isRadar;  // radar icons at 75% alpha
+
+// Takeable blink: full on/off cycle at ~1.5Hz
+float takeableBlink = step(0.0, sin(wallClockTime * 9.42));  // square wave ~1.5Hz
+alpha *= mix(1.0, takeableBlink, isTakeable);
+
+// Stunned: subtle white-blue tint pulse (~2Hz, gentle)
+float stunnedPulse = 0.5 + 0.5 * sin(wallClockTime * 12.57);  // ~2Hz sine
+col = mix(col, vec3(0.82, 0.85, 1.0), 0.45 * stunnedPulse * isStunned);
+
+v_color = vec4(col, alpha);
+v_halfSizeNDC = vec2(iconBaseSize * worldPos_size.z) * ndcScale;
+}
+	]],
+	geometry = [[
+		#version 330
+		layout(points) in;
+		layout(triangle_strip, max_vertices = 4) out;
+
+		in vec4 v_atlasUV[];
+		in vec4 v_color[];
+		in vec2 v_halfSizeNDC[];
+
+		out vec2 f_texCoord;
+		out vec4 f_color;
+
+		void main() {
+			vec4 c = gl_in[0].gl_Position;
+			vec4 uv = v_atlasUV[0];
+			vec2 hs = v_halfSizeNDC[0];
+			f_color = v_color[0];
+
+			// Bottom-left
+			gl_Position = vec4(c.x - hs.x, c.y - hs.y, c.z, 1.0);
+			f_texCoord = vec2(uv.x, uv.y);
+			EmitVertex();
+			// Bottom-right
+			gl_Position = vec4(c.x + hs.x, c.y - hs.y, c.z, 1.0);
+			f_texCoord = vec2(uv.z, uv.y);
+			EmitVertex();
+			// Top-left
+			gl_Position = vec4(c.x - hs.x, c.y + hs.y, c.z, 1.0);
+			f_texCoord = vec2(uv.x, uv.w);
+			EmitVertex();
+			// Top-right
+			gl_Position = vec4(c.x + hs.x, c.y + hs.y, c.z, 1.0);
+			f_texCoord = vec2(uv.z, uv.w);
+			EmitVertex();
+
+			EndPrimitive();
+		}
+	]],
+	fragment = [[
+		#version 330
+		uniform sampler2D iconAtlas;
+		in vec2 f_texCoord;
+		in vec4 f_color;
+		out vec4 fragColor;
+
+		void main() {
+			vec4 texColor = texture(iconAtlas, f_texCoord);
+			fragColor = texColor * f_color;
+		}
+	]],
+	uniformInt = {
+		iconAtlas = 0,
+	},
+}
+
+----------------------------------------------------------------------------------------------------
+-- GL4 Primitive Shaders (circles, quads, lines)
+----------------------------------------------------------------------------------------------------
+
+-- Circle shader: point → screen-space quad → pixel-perfect gradient circle in fragment shader
+local gl4CircleShaderCode = {
+	vertex = [[
+		#version 330
+		layout(location = 0) in vec4 posRadius;    // worldX, worldZ, radius, alpha
+		layout(location = 1) in vec4 coreColor;    // coreR, coreG, coreB, edgeAlpha
+		layout(location = 2) in vec4 edgeColor;    // edgeR, edgeG, edgeB, blendMode (0=normal, 1=additive)
+
+		uniform vec2 wtp_scale;
+		uniform vec2 wtp_offset;
+		uniform vec2 ndcScale;
+		uniform vec2 rotSC;
+		uniform vec2 rotCenter;
+
+		out vec4 v_coreColor;
+		out vec4 v_edgeColor;
+		out vec2 v_halfSizeNDC;
+		out float v_blendMode;
+
+		void main() {
+			vec2 pipPos = wtp_offset + posRadius.xy * wtp_scale;
+			vec2 d = pipPos - rotCenter;
+			pipPos = rotCenter + vec2(d.x*rotSC.y - d.y*rotSC.x, d.x*rotSC.x + d.y*rotSC.y);
+			gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
+
+			float radiusPIP = posRadius.z * abs(wtp_scale.x);
+			v_halfSizeNDC = vec2(radiusPIP) * ndcScale;
+			v_coreColor = vec4(coreColor.rgb, posRadius.w);
+			v_edgeColor = vec4(edgeColor.rgb, coreColor.w);
+			v_blendMode = edgeColor.w;
+		}
+	]],
+	geometry = [[
+		#version 330
+		layout(points) in;
+		layout(triangle_strip, max_vertices = 4) out;
+
+		in vec4 v_coreColor[];
+		in vec4 v_edgeColor[];
+		in vec2 v_halfSizeNDC[];
+		in float v_blendMode[];
+
+		out vec2 f_localCoord;
+		out vec4 f_coreColor;
+		out vec4 f_edgeColor;
+		flat out float f_blendMode;
+
+		void main() {
+			vec4 c = gl_in[0].gl_Position;
+			vec2 hs = v_halfSizeNDC[0];
+			f_coreColor = v_coreColor[0];
+			f_edgeColor = v_edgeColor[0];
+			f_blendMode = v_blendMode[0];
+
+			gl_Position = vec4(c.x - hs.x, c.y - hs.y, 0, 1);
+			f_localCoord = vec2(-1.0, -1.0);
+			EmitVertex();
+			gl_Position = vec4(c.x + hs.x, c.y - hs.y, 0, 1);
+			f_localCoord = vec2(1.0, -1.0);
+			EmitVertex();
+			gl_Position = vec4(c.x - hs.x, c.y + hs.y, 0, 1);
+			f_localCoord = vec2(-1.0, 1.0);
+			EmitVertex();
+			gl_Position = vec4(c.x + hs.x, c.y + hs.y, 0, 1);
+			f_localCoord = vec2(1.0, 1.0);
+			EmitVertex();
+			EndPrimitive();
+		}
+	]],
+	fragment = [[
+		#version 330
+		in vec2 f_localCoord;
+		in vec4 f_coreColor;
+		in vec4 f_edgeColor;
+		flat in float f_blendMode;
+		out vec4 fragColor;
+
+		void main() {
+			float dist = length(f_localCoord);
+			if (dist > 1.0) discard;
+			float t = smoothstep(0.0, 1.0, dist);
+			fragColor = mix(f_coreColor, f_edgeColor, t);
+		}
+	]],
+}
+
+-- Quad shader: point → rotated quad
+local gl4QuadShaderCode = {
+	vertex = [[
+		#version 330
+		layout(location = 0) in vec4 posSizeIn;     // worldX, worldZ, halfWidth, halfHeight
+		layout(location = 1) in vec4 colorIn;        // r, g, b, a
+		layout(location = 2) in vec4 angleFlags;     // angleDeg, 0, 0, 0
+
+		uniform vec2 wtp_scale;
+		uniform vec2 wtp_offset;
+		uniform vec2 ndcScale;
+		uniform vec2 rotSC;
+		uniform vec2 rotCenter;
+
+		out vec4 v_color;
+		out vec2 v_halfSizeNDC;
+		out float v_angle;
+
+		void main() {
+			vec2 pipPos = wtp_offset + posSizeIn.xy * wtp_scale;
+			vec2 d = pipPos - rotCenter;
+			pipPos = rotCenter + vec2(d.x*rotSC.y - d.y*rotSC.x, d.x*rotSC.x + d.y*rotSC.y);
+			gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
+
+			float scalePIP = abs(wtp_scale.x);
+			v_halfSizeNDC = vec2(posSizeIn.z * scalePIP * ndcScale.x,
+			                     posSizeIn.w * scalePIP * ndcScale.y);
+			v_color = colorIn;
+			v_angle = radians(angleFlags.x);
+		}
+	]],
+	geometry = [[
+		#version 330
+		layout(points) in;
+		layout(triangle_strip, max_vertices = 4) out;
+
+		in vec4 v_color[];
+		in vec2 v_halfSizeNDC[];
+		in float v_angle[];
+
+		out vec4 f_color;
+
+		void main() {
+			vec4 c = gl_in[0].gl_Position;
+			vec2 hs = v_halfSizeNDC[0];
+			f_color = v_color[0];
+			float a = v_angle[0];
+			float sa = sin(a), ca = cos(a);
+
+			// Rotated corner offsets
+			vec2 dx = vec2(ca, sa) * hs.x;
+			vec2 dy = vec2(-sa, ca) * hs.y;
+
+			gl_Position = vec4(c.xy - dx - dy, 0, 1); EmitVertex();
+			gl_Position = vec4(c.xy + dx - dy, 0, 1); EmitVertex();
+			gl_Position = vec4(c.xy - dx + dy, 0, 1); EmitVertex();
+			gl_Position = vec4(c.xy + dx + dy, 0, 1); EmitVertex();
+			EndPrimitive();
+		}
+	]],
+	fragment = [[
+		#version 330
+		in vec4 f_color;
+		out vec4 fragColor;
+		void main() {
+			fragColor = f_color;
+		}
+	]],
+}
+
+-- Line shader: simple world-space → NDC vertex transform with per-vertex color
+local gl4LineShaderCode = {
+	vertex = [[
+		#version 330
+		layout(location = 0) in vec2 worldPos;
+		layout(location = 1) in vec4 vertColor;
+
+		uniform vec2 wtp_scale;
+		uniform vec2 wtp_offset;
+		uniform vec2 ndcScale;
+		uniform vec2 rotSC;
+		uniform vec2 rotCenter;
+
+		out vec4 f_color;
+
+		void main() {
+			vec2 pipPos = wtp_offset + worldPos * wtp_scale;
+			vec2 d = pipPos - rotCenter;
+			pipPos = rotCenter + vec2(d.x*rotSC.y - d.y*rotSC.x, d.x*rotSC.x + d.y*rotSC.y);
+			gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
+			f_color = vertColor;
+		}
+	]],
+	fragment = [[
+		#version 330
+		in vec4 f_color;
+		out vec4 fragColor;
+		void main() {
+			fragColor = f_color;
+		}
+	]],
+}
+
+-- Initialize GL4 icon rendering: create atlas, VBO, shader
+local function InitGL4Icons()
+	if not config.useGL4Icons then return end
+	if not gl.GetVAO or not gl.GetVBO then
+		Spring.Echo("[PIP] GL4 icons: VAO/VBO not available, falling back to legacy")
+		return
+	end
+	if not gl.CreateTextureAtlas then
+		Spring.Echo("[PIP] GL4 icons: CreateTextureAtlas not available, falling back to legacy")
+		return
+	end
+
+	-- Build texture atlas from all unique icon bitmaps
+	local uniqueBitmaps = {}
+	for uDefID, _ in pairs(UnitDefs) do
+		local iconData = cache.unitIcon[uDefID]
+		if iconData and iconData.bitmap then
+			uniqueBitmaps[iconData.bitmap] = true
+		end
+	end
+	uniqueBitmaps['LuaUI/Images/pip/PipBlip.png'] = true  -- fallback icon
+
+	local atlasSize = 4096
+	local atlas = gl.CreateTextureAtlas(atlasSize, atlasSize, 1)
+	if not atlas then
+		Spring.Echo("[PIP] GL4 icons: Failed to create texture atlas")
+		return
+	end
+
+	for bitmap, _ in pairs(uniqueBitmaps) do
+		-- Validate texture exists before adding (gl.AddAtlasTexture crashes on missing textures)
+		local texInfo = gl.TextureInfo(bitmap)
+		if texInfo and texInfo.xsize > 0 and texInfo.ysize > 0 then
+			gl.AddAtlasTexture(atlas, bitmap)
+		else
+			uniqueBitmaps[bitmap] = nil  -- Remove so GetAtlasTexture loop skips it
+		end
+	end
+	gl.FinalizeTextureAtlas(atlas)
+
+	-- Store UV rects per bitmap (reorder from engine's u0,u1,v0,v1 to u0,v0,u1,v1)
+	-- Swap v0/v1 to fix Y-flip (atlas Y=0 is top, OpenGL Y=0 is bottom)
+	-- pcall because GetAtlasTexture throws if the bitmap failed to add (atlas full)
+	local addedCount, failedCount = 0, 0
+	for bitmap, _ in pairs(uniqueBitmaps) do
+		local ok, u0, u1, v0, v1 = pcall(gl.GetAtlasTexture, atlas, bitmap)
+		if ok and u0 then
+			gl4Icons.atlasUVs[bitmap] = {u0, v1, u1, v0}  -- swap v0/v1 for Y-flip
+			addedCount = addedCount + 1
+		else
+			failedCount = failedCount + 1
+		end
+	end
+	if failedCount > 0 then
+		Spring.Echo("[PIP] GL4 icons: " .. failedCount .. " bitmaps failed to add to atlas (" .. addedCount .. " succeeded)")
+	end
+	gl4Icons.defaultUV = gl4Icons.atlasUVs['LuaUI/Images/pip/PipBlip.png'] or {0, 1, 1, 0}
+	gl4Icons.atlas = atlas
+
+	-- Create raw VBO directly (no InstanceVBOTable — avoids per-frame table allocations)
+	-- Layout: 12 floats per instance (3 vec4 attributes)
+	local vboLayout = {
+		{id = 0, name = 'worldPos_size', size = 4},   -- worldX, worldZ, sizeScale, isRadar
+		{id = 1, name = 'atlasUV',       size = 4},   -- u0, v0, u1, v1
+		{id = 2, name = 'colorFlags',    size = 4},   -- r, g, b, wobblePhase
+	}
+	local vbo = gl.GetVBO(GL.ARRAY_BUFFER, true)
+	if not vbo then
+		Spring.Echo("[PIP] GL4 icons: Failed to create VBO")
+		gl.DeleteTextureAtlas(atlas)
+		gl4Icons.atlas = nil
+		return
+	end
+	vbo:Define(GL4_MAX_INSTANCES, vboLayout)
+
+	-- Pre-allocate instance data array (avoids per-frame GC)
+	local instanceData = {}
+	for i = 1, GL4_MAX_INSTANCES * GL4_INSTANCE_STEP do
+		instanceData[i] = 0
+	end
+	gl4Icons.instanceData = instanceData
+	gl4Icons.vbo = vbo
+
+	-- Create VAO: attach VBO as vertex buffer (geometry shader expands points → quads)
+	local vao = gl.GetVAO()
+	if not vao then
+		Spring.Echo("[PIP] GL4 icons: Failed to create VAO")
+		vbo:Delete()
+		gl.DeleteTextureAtlas(atlas)
+		gl4Icons.atlas = nil
+		gl4Icons.vbo = nil
+		return
+	end
+	vao:AttachVertexBuffer(vbo)
+	gl4Icons.vao = vao
+
+	-- Compile shader
+	local shader = gl.CreateShader(gl4IconShaderCode)
+	if not shader then
+		Spring.Echo("[PIP] GL4 icons: Shader compilation failed: " .. tostring(gl.GetShaderLog()))
+		vao:Delete()
+		vbo:Delete()
+		gl.DeleteTextureAtlas(atlas)
+		gl4Icons.atlas = nil
+		gl4Icons.vbo = nil
+		gl4Icons.vao = nil
+		return
+	end
+	gl4Icons.shader = shader
+
+	-- Cache uniform locations for per-frame updates
+	gl4Icons.uniformLocs = {
+		wtp_scale    = gl.GetUniformLocation(shader, "wtp_scale"),
+		wtp_offset   = gl.GetUniformLocation(shader, "wtp_offset"),
+		ndcScale     = gl.GetUniformLocation(shader, "ndcScale"),
+		rotSC        = gl.GetUniformLocation(shader, "rotSC"),
+		rotCenter    = gl.GetUniformLocation(shader, "rotCenter"),
+		iconBaseSize = gl.GetUniformLocation(shader, "iconBaseSize"),
+		gameTime     = gl.GetUniformLocation(shader, "gameTime"),
+		wallClockTime = gl.GetUniformLocation(shader, "wallClockTime"),
+	}
+
+	gl4Icons.enabled = true
+	Spring.Echo("[PIP] GL4 instanced icon rendering enabled (" .. atlasSize .. "x" .. atlasSize .. " atlas)")
+end
+
+-- Cleanup GL4 icon resources
+local function DestroyGL4Icons()
+	if gl4Icons.shader then
+		gl.DeleteShader(gl4Icons.shader)
+		gl4Icons.shader = nil
+	end
+	if gl4Icons.vao then
+		gl4Icons.vao:Delete()
+		gl4Icons.vao = nil
+	end
+	if gl4Icons.vbo then
+		gl4Icons.vbo:Delete()
+		gl4Icons.vbo = nil
+	end
+	if gl4Icons.atlas then
+		gl.DeleteTextureAtlas(gl4Icons.atlas)
+		gl4Icons.atlas = nil
+	end
+	gl4Icons.enabled = false
+end
+
+----------------------------------------------------------------------------------------------------
+-- GL4 Primitive Init / Destroy / Helpers
+----------------------------------------------------------------------------------------------------
+
+local function CreateLineVBOSet(maxVertices)
+	local vboLayout = {
+		{id = 0, name = 'worldPos', size = 2},   -- worldX, worldZ
+		{id = 1, name = 'vertColor', size = 4},   -- r, g, b, a
+	}
+	local vbo = gl.GetVBO(GL.ARRAY_BUFFER, true)
+	if not vbo then return nil, nil, nil end
+	vbo:Define(maxVertices, vboLayout)
+	local vao = gl.GetVAO()
+	if not vao then vbo:Delete(); return nil, nil, nil end
+	vao:AttachVertexBuffer(vbo)
+	local data = {}
+	for i = 1, maxVertices * GL4_LINE_STEP do data[i] = 0 end
+	return vbo, vao, data
+end
+
+local function InitGL4Primitives()
+	if not config.useGL4Icons then return end
+	if not gl.GetVAO or not gl.GetVBO then return end
+
+	-- Circle VBO/VAO
+	local circleLayout = {
+		{id = 0, name = 'posRadius',  size = 4},   -- worldX, worldZ, radius, alpha
+		{id = 1, name = 'coreColor',  size = 4},   -- coreR, coreG, coreB, edgeAlpha
+		{id = 2, name = 'edgeColor',  size = 4},   -- edgeR, edgeG, edgeB, blendMode
+	}
+	local cVbo = gl.GetVBO(GL.ARRAY_BUFFER, true)
+	if not cVbo then return end
+	cVbo:Define(GL4_CIRCLE_MAX, circleLayout)
+	local cVao = gl.GetVAO()
+	if not cVao then cVbo:Delete(); return end
+	cVao:AttachVertexBuffer(cVbo)
+	local cData = {}
+	for i = 1, GL4_CIRCLE_MAX * GL4_CIRCLE_STEP do cData[i] = 0 end
+	gl4Prim.circles.vbo = cVbo
+	gl4Prim.circles.vao = cVao
+	gl4Prim.circles.data = cData
+
+	-- Quad VBO/VAO
+	local quadLayout = {
+		{id = 0, name = 'posSizeIn',   size = 4},  -- worldX, worldZ, halfWidth, halfHeight
+		{id = 1, name = 'colorIn',     size = 4},  -- r, g, b, a
+		{id = 2, name = 'angleFlags',  size = 4},  -- angleDeg, 0, 0, 0
+	}
+	local qVbo = gl.GetVBO(GL.ARRAY_BUFFER, true)
+	if not qVbo then cVao:Delete(); cVbo:Delete(); return end
+	qVbo:Define(GL4_QUAD_MAX, quadLayout)
+	local qVao = gl.GetVAO()
+	if not qVao then qVbo:Delete(); cVao:Delete(); cVbo:Delete(); return end
+	qVao:AttachVertexBuffer(qVbo)
+	local qData = {}
+	for i = 1, GL4_QUAD_MAX * GL4_QUAD_STEP do qData[i] = 0 end
+	gl4Prim.quads.vbo = qVbo
+	gl4Prim.quads.vao = qVao
+	gl4Prim.quads.data = qData
+
+	-- Line VBOs (3 categories share same shader)
+	local glVbo, glVao, glData = CreateLineVBOSet(GL4_LINE_MAX)
+	if not glVbo then qVao:Delete(); qVbo:Delete(); cVao:Delete(); cVbo:Delete(); return end
+	gl4Prim.glowLines.vbo, gl4Prim.glowLines.vao, gl4Prim.glowLines.data = glVbo, glVao, glData
+
+	local clVbo, clVao, clData = CreateLineVBOSet(GL4_LINE_MAX)
+	if not clVbo then
+		glVao:Delete(); glVbo:Delete(); qVao:Delete(); qVbo:Delete(); cVao:Delete(); cVbo:Delete()
+		return
+	end
+	gl4Prim.coreLines.vbo, gl4Prim.coreLines.vao, gl4Prim.coreLines.data = clVbo, clVao, clData
+
+	local nlVbo, nlVao, nlData = CreateLineVBOSet(GL4_LINE_MAX)
+	if not nlVbo then
+		clVao:Delete(); clVbo:Delete(); glVao:Delete(); glVbo:Delete()
+		qVao:Delete(); qVbo:Delete(); cVao:Delete(); cVbo:Delete()
+		return
+	end
+	gl4Prim.normLines.vbo, gl4Prim.normLines.vao, gl4Prim.normLines.data = nlVbo, nlVao, nlData
+
+	-- Compile shaders
+	local cShader = gl.CreateShader(gl4CircleShaderCode)
+	if not cShader then
+		Spring.Echo("[PIP] GL4 circle shader failed: " .. tostring(gl.GetShaderLog()))
+		-- cleanup all
+		nlVao:Delete(); nlVbo:Delete(); clVao:Delete(); clVbo:Delete()
+		glVao:Delete(); glVbo:Delete(); qVao:Delete(); qVbo:Delete()
+		cVao:Delete(); cVbo:Delete()
+		return
+	end
+	gl4Prim.circles.shader = cShader
+
+	local qShader = gl.CreateShader(gl4QuadShaderCode)
+	if not qShader then
+		Spring.Echo("[PIP] GL4 quad shader failed: " .. tostring(gl.GetShaderLog()))
+		gl.DeleteShader(cShader)
+		nlVao:Delete(); nlVbo:Delete(); clVao:Delete(); clVbo:Delete()
+		glVao:Delete(); glVbo:Delete(); qVao:Delete(); qVbo:Delete()
+		cVao:Delete(); cVbo:Delete()
+		return
+	end
+	gl4Prim.quads.shader = qShader
+
+	local lShader = gl.CreateShader(gl4LineShaderCode)
+	if not lShader then
+		Spring.Echo("[PIP] GL4 line shader failed: " .. tostring(gl.GetShaderLog()))
+		gl.DeleteShader(qShader); gl.DeleteShader(cShader)
+		nlVao:Delete(); nlVbo:Delete(); clVao:Delete(); clVbo:Delete()
+		glVao:Delete(); glVbo:Delete(); qVao:Delete(); qVbo:Delete()
+		cVao:Delete(); cVbo:Delete()
+		return
+	end
+	gl4Prim.lineShader = lShader
+
+	-- Cache uniform locations
+	local function cacheUniforms(shader)
+		return {
+			wtp_scale  = gl.GetUniformLocation(shader, "wtp_scale"),
+			wtp_offset = gl.GetUniformLocation(shader, "wtp_offset"),
+			ndcScale   = gl.GetUniformLocation(shader, "ndcScale"),
+			rotSC      = gl.GetUniformLocation(shader, "rotSC"),
+			rotCenter  = gl.GetUniformLocation(shader, "rotCenter"),
+		}
+	end
+	gl4Prim.circles.uniformLocs = cacheUniforms(cShader)
+	gl4Prim.quads.uniformLocs = cacheUniforms(qShader)
+	gl4Prim.lineUniformLocs = cacheUniforms(lShader)
+
+	gl4Prim.enabled = true
+	Spring.Echo("[PIP] GL4 primitive rendering enabled (circles, quads, lines)")
+end
+
+local function DestroyGL4Primitives()
+	if gl4Prim.circles.shader then gl.DeleteShader(gl4Prim.circles.shader); gl4Prim.circles.shader = nil end
+	if gl4Prim.quads.shader   then gl.DeleteShader(gl4Prim.quads.shader);   gl4Prim.quads.shader = nil end
+	if gl4Prim.lineShader      then gl.DeleteShader(gl4Prim.lineShader);      gl4Prim.lineShader = nil end
+
+	for _, sub in ipairs({gl4Prim.circles, gl4Prim.quads, gl4Prim.glowLines, gl4Prim.coreLines, gl4Prim.normLines}) do
+		if sub.vao then sub.vao:Delete(); sub.vao = nil end
+		if sub.vbo then sub.vbo:Delete(); sub.vbo = nil end
+	end
+	gl4Prim.enabled = false
+end
+
+-- Reset per-frame counters
+local function GL4ResetPrimCounts()
+	gl4Prim.circles.count = 0
+	gl4Prim.quads.count = 0
+	gl4Prim.glowLines.count = 0
+	gl4Prim.coreLines.count = 0
+	gl4Prim.normLines.count = 0
+end
+
+-- Helper: add a gradient circle (explosion, plasma, etc.)
+local function GL4AddCircle(worldX, worldZ, radius, alpha, coreR, coreG, coreB, edgeR, edgeG, edgeB, edgeAlpha, blendMode)
+	local c = gl4Prim.circles
+	if c.count >= GL4_CIRCLE_MAX then return end
+	local off = c.count * GL4_CIRCLE_STEP
+	local d = c.data
+	d[off+1] = worldX;  d[off+2] = worldZ; d[off+3] = radius; d[off+4] = alpha or 1
+	d[off+5] = coreR;   d[off+6] = coreG;  d[off+7] = coreB;  d[off+8] = edgeAlpha or 0
+	d[off+9] = edgeR;   d[off+10] = edgeG; d[off+11] = edgeB; d[off+12] = blendMode or 0
+	c.count = c.count + 1
+end
+
+-- Helper: add an oriented quad (missile, blaster)
+local function GL4AddQuad(worldX, worldZ, halfW, halfH, angleDeg, r, g, b, a)
+	local q = gl4Prim.quads
+	if q.count >= GL4_QUAD_MAX then return end
+	local off = q.count * GL4_QUAD_STEP
+	local d = q.data
+	d[off+1] = worldX; d[off+2] = worldZ; d[off+3] = halfW;  d[off+4] = halfH
+	d[off+5] = r;      d[off+6] = g;      d[off+7] = b;      d[off+8] = a or 1
+	d[off+9] = angleDeg or 0; d[off+10] = 0; d[off+11] = 0; d[off+12] = 0
+	q.count = q.count + 1
+end
+
+-- Helper: add a line vertex pair to a specific line category
+local function GL4AddLineToCategory(cat, x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+	if cat.count + 2 > GL4_LINE_MAX then return end
+	local off = cat.count * GL4_LINE_STEP
+	local d = cat.data
+	-- First vertex
+	d[off+1] = x1; d[off+2] = z1
+	d[off+3] = r;  d[off+4] = g; d[off+5] = b; d[off+6] = a or 1
+	-- Second vertex
+	d[off+7] = x2; d[off+8] = z2
+	d[off+9] = r2 or r; d[off+10] = g2 or g; d[off+11] = b2 or b; d[off+12] = a2 or a or 1
+	cat.count = cat.count + 2
+end
+
+local function GL4AddGlowLine(x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+	GL4AddLineToCategory(gl4Prim.glowLines, x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+end
+local function GL4AddCoreLine(x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+	GL4AddLineToCategory(gl4Prim.coreLines, x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+end
+local function GL4AddNormLine(x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+	GL4AddLineToCategory(gl4Prim.normLines, x1, z1, x2, z2, r, g, b, a, r2, g2, b2, a2)
+end
+
+-- Set shared uniforms on a shader
+local function GL4SetPrimUniforms(shader, ulocs)
+	gl.UseShader(shader)
+	gl.UniformFloat(ulocs.wtp_scale, worldToPipScaleX, worldToPipScaleZ)
+	gl.UniformFloat(ulocs.wtp_offset, worldToPipOffsetX, worldToPipOffsetZ)
+	local fboW = render.dim.r - render.dim.l
+	local fboH = render.dim.t - render.dim.b
+	gl.UniformFloat(ulocs.ndcScale, 2.0 / fboW, 2.0 / fboH)
+	local rot = render.minimapRotation or 0
+	gl.UniformFloat(ulocs.rotSC, math.sin(rot), math.cos(rot))
+	gl.UniformFloat(ulocs.rotCenter, fboW * 0.5, fboH * 0.5)
+end
+
+-- Draw all collected circles, quads, and effect lines (called after PopMatrix in DrawUnitsAndFeatures)
+local function GL4FlushEffects()
+	if not gl4Prim.enabled then return end
+
+	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+
+	-- Circles
+	if gl4Prim.circles.count > 0 then
+		local c = gl4Prim.circles
+		c.vbo:Upload(c.data, nil, 0, 1, c.count * GL4_CIRCLE_STEP)
+		GL4SetPrimUniforms(c.shader, c.uniformLocs)
+		c.vao:DrawArrays(GL.POINTS, c.count)
+		gl.UseShader(0)
+	end
+
+	-- Quads
+	if gl4Prim.quads.count > 0 then
+		local q = gl4Prim.quads
+		q.vbo:Upload(q.data, nil, 0, 1, q.count * GL4_QUAD_STEP)
+		GL4SetPrimUniforms(q.shader, q.uniformLocs)
+		q.vao:DrawArrays(GL.POINTS, q.count)
+		gl.UseShader(0)
+	end
+
+	-- Lines (3 width categories, same shader)
+	local resScale = render.contentScale or 1
+	local zoomScale = math.max(0.5, cameraState.zoom / 70)
+	local glowWidth = math.max(2, 5 * zoomScale) * resScale
+	local coreWidth = math.max(1, 2 * zoomScale) * resScale
+	local normWidth = 1 * resScale
+
+	local anyLines = gl4Prim.glowLines.count > 0 or gl4Prim.coreLines.count > 0 or gl4Prim.normLines.count > 0
+	if anyLines then
+		GL4SetPrimUniforms(gl4Prim.lineShader, gl4Prim.lineUniformLocs)
+
+		if gl4Prim.glowLines.count > 0 then
+			local ln = gl4Prim.glowLines
+			ln.vbo:Upload(ln.data, nil, 0, 1, ln.count * GL4_LINE_STEP)
+			glFunc.LineWidth(glowWidth)
+			ln.vao:DrawArrays(GL.LINES, ln.count)
+		end
+		if gl4Prim.coreLines.count > 0 then
+			local ln = gl4Prim.coreLines
+			ln.vbo:Upload(ln.data, nil, 0, 1, ln.count * GL4_LINE_STEP)
+			glFunc.LineWidth(coreWidth)
+			ln.vao:DrawArrays(GL.LINES, ln.count)
+		end
+		if gl4Prim.normLines.count > 0 then
+			local ln = gl4Prim.normLines
+			ln.vbo:Upload(ln.data, nil, 0, 1, ln.count * GL4_LINE_STEP)
+			glFunc.LineWidth(normWidth)
+			ln.vao:DrawArrays(GL.LINES, ln.count)
+		end
+
+		glFunc.LineWidth(1 * resScale)
+		gl.UseShader(0)
+	end
+end
+
+-- Flush only command lines (called at end of DrawCommandQueuesOverlay)
+local function GL4FlushCommandLines()
+	if not gl4Prim.enabled then return end
+	if gl4Prim.normLines.count == 0 then return end
+
+	local resScale = render.contentScale or 1
+	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+	GL4SetPrimUniforms(gl4Prim.lineShader, gl4Prim.lineUniformLocs)
+
+	local ln = gl4Prim.normLines
+	ln.vbo:Upload(ln.data, nil, 0, 1, ln.count * GL4_LINE_STEP)
+	glFunc.LineWidth(1 * resScale)
+	ln.vao:DrawArrays(GL.LINES, ln.count)
+
+	glFunc.LineWidth(1 * resScale)
+	gl.UseShader(0)
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -866,15 +1916,43 @@ end
 ----------------------------------------------------------------------------------------------------
 -- Utility
 
--- Cached factors for WorldToPipCoords (performance optimization)
-local worldToPipScaleX = 1
-local worldToPipScaleZ = 1
-local worldToPipOffsetX = 0
-local worldToPipOffsetZ = 0
+-- (worldToPipScale/Offset are declared earlier, before GL4 primitive code)
+
+-- Get PIP dimensions for world coordinate calculations, accounting for rotation
+-- When rotated 90°/270°, width and height are swapped for world calculations
+local function GetEffectivePipDimensions()
+	local pipWidth = render.dim.r - render.dim.l
+	local pipHeight = render.dim.t - render.dim.b
+	if render.minimapRotation then
+		local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+		if rotDeg > 45 and rotDeg < 135 then
+			return pipHeight, pipWidth  -- Swapped
+		end
+	end
+	return pipWidth, pipHeight
+end
+
+-- Clamp a camera position along one axis, centering when view exceeds the map
+-- marginFraction: fraction of visibleSize allowed past map edge (e.g. 0.15)
+local function ClampCameraAxis(pos, visibleSize, mapSize, marginFraction)
+	local margin = visibleSize * marginFraction
+	local minPos = visibleSize / 2 - margin
+	local maxPos = mapSize - (visibleSize / 2 - margin)
+	if minPos >= maxPos then
+		return mapSize / 2
+	end
+	return math.min(math.max(pos, minPos), maxPos)
+end
 
 function RecalculateWorldCoordinates()
-	local hw, hh = 0.5 * (render.dim.r - render.dim.l) / cameraState.zoom, 0.5 * (render.dim.t - render.dim.b) / cameraState.zoom
-
+	-- Guard against uninitialized render dimensions
+	if not render.dim.l or not render.dim.r or not render.dim.b or not render.dim.t then return end
+	
+	-- Use contentScale to calculate world bounds correctly when rendering to higher-res texture
+	-- (render.dim is scaled for scissoring, but world bounds should use logical dimensions)
+	local scale = render.contentScale or 1
+	local hw, hh = 0.5 * (render.dim.r - render.dim.l) / (cameraState.zoom * scale), 0.5 * (render.dim.t - render.dim.b) / (cameraState.zoom * scale)
+	
 	-- At 90/270 degrees, the content is rotated inside the rectangular PIP window
 	-- So we need to swap what the world considers width/height
 	local isRotated90 = false
@@ -885,7 +1963,7 @@ function RecalculateWorldCoordinates()
 			isRotated90 = true
 		end
 	end
-
+	
 	render.world.l, render.world.r, render.world.b, render.world.t = cameraState.wcx - hw, cameraState.wcx + hw, cameraState.wcz + hh, cameraState.wcz - hh
 
 	-- Precalculate factors for WorldToPipCoords (performance)
@@ -920,7 +1998,7 @@ function RecalculateGroundTextureCoordinates()
 	-- At 90/270 degrees with rectangular PIP, we need to use swapped dimensions
 	-- so that after rotation the content fills the window correctly
 	local dimL, dimR, dimB, dimT = render.dim.l, render.dim.r, render.dim.b, render.dim.t
-
+	
 	if render.minimapRotation then
 		local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
 		if rotDeg > 45 and rotDeg < 135 then
@@ -936,7 +2014,7 @@ function RecalculateGroundTextureCoordinates()
 			dimT = centerY + halfWidth
 		end
 	end
-
+	
 	if render.world.l < 0 then
 		render.ground.view.l = dimL + (dimR - dimL) * (-render.world.l / (render.world.r - render.world.l))
 		render.ground.coord.l = 0
@@ -968,21 +2046,32 @@ function RecalculateGroundTextureCoordinates()
 end
 
 local function CorrectScreenPosition()
-	local screenMarginPx = math.floor(config.screenMargin * render.vsy)
+	-- Guard against uninitialized render dimensions
+	if not render.dim.l or not render.dim.r or not render.dim.b or not render.dim.t then return end
+
+	-- In minimap mode, use different margin and allow edge-to-edge positioning
+	local screenMarginPx
+	if isMinimapMode then
+		screenMarginPx = math.floor(config.minimapModeScreenMargin * render.vsy)
+	else
+		screenMarginPx = math.floor(config.screenMargin * render.vsy)
+	end
 	local minSize = math.floor(config.minPanelSize * render.widgetScale)
 
 	-- Calculate current window dimensions
 	local windowWidth = render.dim.r - render.dim.l
 	local windowHeight = render.dim.t - render.dim.b
 
-	-- Enforce minimum panel size
-	if windowWidth < minSize then
-		windowWidth = minSize
-		render.dim.r = render.dim.l + windowWidth
-	end
-	if windowHeight < minSize then
-		windowHeight = minSize
-		render.dim.t = render.dim.b + windowHeight
+	-- Enforce minimum panel size (skip in minimap mode - sizing is determined differently)
+	if not isMinimapMode then
+		if windowWidth < minSize then
+			windowWidth = minSize
+			render.dim.r = render.dim.l + windowWidth
+		end
+		if windowHeight < minSize then
+			windowHeight = minSize
+			render.dim.t = render.dim.b + windowHeight
+		end
 	end
 
 	-- Check and correct left boundary
@@ -1010,10 +2099,173 @@ local function CorrectScreenPosition()
 	end
 end
 
+local function IsFiniteNumber(value)
+	return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+local function AreDimensionsValid(dim, minWidth, minHeight)
+	if type(dim) ~= "table" then
+		return false
+	end
+
+	local l, r, b, t = dim.l, dim.r, dim.b, dim.t
+	if not (IsFiniteNumber(l) and IsFiniteNumber(r) and IsFiniteNumber(b) and IsFiniteNumber(t)) then
+		return false
+	end
+
+	minWidth = minWidth or 1
+	minHeight = minHeight or 1
+	return (r - l) >= minWidth and (t - b) >= minHeight
+end
+
+local function AreExpandedDimensionsValid(dim)
+	local minSize = math.floor(config.minPanelSize * render.widgetScale)
+	return AreDimensionsValid(dim, minSize, minSize) and dim.r > minSize and dim.t > minSize
+end
+
+local function BuildDefaultExpandedDimensions()
+	local defaultL = math.floor(render.vsx * 0.7)
+	local defaultB = math.floor(render.vsy * 0.7)
+	local defaultW = math.floor(config.minPanelSize * render.widgetScale * 1.4)
+	local defaultH = math.floor(config.minPanelSize * render.widgetScale * 1.2)
+
+	return {
+		l = defaultL,
+		r = defaultL + defaultW,
+		b = defaultB,
+		t = defaultB + defaultH,
+	}
+end
+
+local function EnsureSavedExpandedDimensions()
+	if AreExpandedDimensionsValid(uiState.savedDimensions) then
+		return uiState.savedDimensions
+	end
+
+	local recoveredDimensions
+	if not uiState.inMinMode and AreExpandedDimensionsValid(render.dim) then
+		recoveredDimensions = {
+			l = render.dim.l,
+			r = render.dim.r,
+			b = render.dim.b,
+			t = render.dim.t,
+		}
+	else
+		recoveredDimensions = BuildDefaultExpandedDimensions()
+	end
+
+	uiState.savedDimensions = recoveredDimensions
+	return uiState.savedDimensions
+end
+
+local UpdateTracking  -- forward declaration (called in StartMaximizeAnimation, defined later)
+
+local function StartMaximizeAnimation()
+	local buttonSize = math.floor(render.usedButtonSize * config.maximizeSizemult)
+	local screenMarginPx = math.floor(config.screenMargin * render.vsy)
+
+	if not IsFiniteNumber(uiState.minModeL) or not IsFiniteNumber(uiState.minModeB) then
+		uiState.minModeL = render.vsx - buttonSize - screenMarginPx
+		uiState.minModeB = render.vsy - buttonSize - screenMarginPx
+	end
+
+	local expandedDimensions = EnsureSavedExpandedDimensions()
+	render.dim.l = expandedDimensions.l
+	render.dim.r = expandedDimensions.r
+	render.dim.b = expandedDimensions.b
+	render.dim.t = expandedDimensions.t
+	CorrectScreenPosition()
+
+	-- Keep the clamped dimensions as the persisted expanded target.
+	uiState.savedDimensions = {
+		l = render.dim.l,
+		r = render.dim.r,
+		b = render.dim.b,
+		t = render.dim.t,
+	}
+
+	if interactionState.areTracking then
+		UpdateTracking()
+	end
+	RecalculateWorldCoordinates()
+	RecalculateGroundTextureCoordinates()
+
+	uiState.animStartDim = {
+		l = uiState.minModeL,
+		r = uiState.minModeL + buttonSize,
+		b = uiState.minModeB,
+		t = uiState.minModeB + buttonSize
+	}
+	uiState.animEndDim = {
+		l = render.dim.l,
+		r = render.dim.r,
+		b = render.dim.b,
+		t = render.dim.t
+	}
+	uiState.animationProgress = 0
+	uiState.isAnimating = true
+	uiState.inMinMode = false
+	miscState.hasOpenedPIPThisGame = true
+end
+
+local function RecoverInvalidAnimationState()
+	uiState.isAnimating = false
+
+	if uiState.inMinMode then
+		local buttonSize = math.floor(render.usedButtonSize * config.maximizeSizemult)
+		local screenMarginPx = math.floor(config.screenMargin * render.vsy)
+
+		if not IsFiniteNumber(uiState.minModeL) or not IsFiniteNumber(uiState.minModeB) then
+			uiState.minModeL = render.vsx - buttonSize - screenMarginPx
+			uiState.minModeB = render.vsy - buttonSize - screenMarginPx
+		end
+
+		render.dim.l = uiState.minModeL
+		render.dim.r = uiState.minModeL + buttonSize
+		render.dim.b = uiState.minModeB
+		render.dim.t = uiState.minModeB + buttonSize
+	else
+		local expandedDimensions = EnsureSavedExpandedDimensions()
+		render.dim.l = expandedDimensions.l
+		render.dim.r = expandedDimensions.r
+		render.dim.b = expandedDimensions.b
+		render.dim.t = expandedDimensions.t
+		CorrectScreenPosition()
+
+		uiState.savedDimensions = {
+			l = render.dim.l,
+			r = render.dim.r,
+			b = render.dim.b,
+			t = render.dim.t,
+		}
+	end
+
+	RecalculateWorldCoordinates()
+	RecalculateGroundTextureCoordinates()
+	pipR2T.contentNeedsUpdate = true
+	pipR2T.frameNeedsUpdate = true
+	UpdateGuishaderBlur()
+end
+
 local function UpdateGuishaderBlur()
 	if WG['guishader'] then
-		-- Always update blur with current dimensions (including when minimized)
-		-- The dim values will reflect the minimized button size when uiState.inMinMode is true
+		-- Determine the correct bounds based on mode
+		local blurL, blurB, blurR, blurT
+		if uiState.inMinMode and not uiState.isAnimating then
+			-- Use minimized button position
+			local buttonSize = math.floor(render.usedButtonSize * config.maximizeSizemult)
+			blurL = uiState.minModeL - render.elementPadding
+			blurB = uiState.minModeB - render.elementPadding
+			blurR = uiState.minModeL + buttonSize + render.elementPadding
+			blurT = uiState.minModeB + buttonSize + render.elementPadding
+		else
+			-- Use regular PIP dimensions
+			blurL = render.dim.l - render.elementPadding
+			blurB = render.dim.b - render.elementPadding
+			blurR = render.dim.r + render.elementPadding
+			blurT = render.dim.t + render.elementPadding
+		end
+		
 		-- Use InsertDlist for rounded corner blur support
 		if WG['guishader'].InsertDlist then
 			-- Clean up old dlist ourselves before creating new one
@@ -1023,18 +2275,27 @@ local function UpdateGuishaderBlur()
 			end
 			-- Create new dlist with rounded rectangle
 			render.guishaderDlist = gl.CreateList(function()
-				render.RectRound(render.dim.l-render.elementPadding, render.dim.b-render.elementPadding, render.dim.r+render.elementPadding, render.dim.t+render.elementPadding, render.elementCorner)
+				render.RectRound(blurL, blurB, blurR, blurT, render.elementCorner)
 			end)
 			-- Use force=true to ensure immediate stencil texture update
 			WG['guishader'].InsertDlist(render.guishaderDlist, 'pip'..pipNumber, true)
 		elseif WG['guishader'].InsertRect then
 			-- Fallback to InsertRect if InsertDlist not available
-			WG['guishader'].InsertRect(render.dim.l-render.elementPadding, render.dim.b-render.elementPadding, render.dim.r+render.elementPadding, render.dim.t+render.elementPadding, 'pip'..pipNumber)
+			WG['guishader'].InsertRect(blurL, blurB, blurR, blurT, 'pip'..pipNumber)
 		end
 	end
 end
 
 local function UpdateCentering(mx, my)
+	-- In minimap mode at minimum zoom, don't allow centering - keep centered on map
+	if IsAtMinimumZoom(cameraState.zoom) then
+		cameraState.wcx = mapInfo.mapSizeX / 2
+		cameraState.wcz = mapInfo.mapSizeZ / 2
+		cameraState.targetWcx = cameraState.wcx
+		cameraState.targetWcz = cameraState.wcz
+		return
+	end
+	
 	local _, pos = Spring.TraceScreenRay(mx, my, true)
 	if pos and pos[2] > -10000 then
 		cameraState.wcx, cameraState.wcz = pos[1], pos[3]
@@ -1044,7 +2305,7 @@ local function UpdateCentering(mx, my)
 	end
 end
 
-local function UpdateTracking()
+UpdateTracking = function()
 	local uCount = 0
 	local ax, az = 0, 0
 	local stillAlive = {}
@@ -1067,22 +2328,13 @@ local function UpdateTracking()
 
 		-- Apply map edge margin constraints
 		-- Use TARGET zoom level so panning and zooming are in sync when tracking near edges
-		local pipWidth = render.dim.r - render.dim.l
-		local pipHeight = render.dim.t - render.dim.b
+		local pipWidth, pipHeight = GetEffectivePipDimensions()
 		local visibleWorldWidth = pipWidth / cameraState.targetZoom
 		local visibleWorldHeight = pipHeight / cameraState.targetZoom
-		local smallerVisibleDimension = math.min(visibleWorldWidth, visibleWorldHeight)
-		local margin = smallerVisibleDimension * config.mapEdgeMargin
-
-		-- Calculate min/max camera positions to keep margin from map edges
-		local minWcx = visibleWorldWidth / 2 - margin
-		local maxWcx = mapInfo.mapSizeX - (visibleWorldWidth / 2 - margin)
-		local minWcz = visibleWorldHeight / 2 - margin
-		local maxWcz = mapInfo.mapSizeZ - (visibleWorldHeight / 2 - margin)
 
 		-- Set only the target positions for smooth camera transition, clamped to margins
-		cameraState.targetWcx = math.min(math.max(newTargetWcx, minWcx), maxWcx)
-		cameraState.targetWcz = math.min(math.max(newTargetWcz, minWcz), maxWcz)
+		cameraState.targetWcx = ClampCameraAxis(newTargetWcx, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.targetWcz = ClampCameraAxis(newTargetWcz, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 		-- Don't update cameraState.wcx/cameraState.wcz immediately - let the smooth interpolation system handle it
 		-- RecalculateWorldCoordinates() and RecalculateGroundTextureCoordinates() will be called in Update()
@@ -1111,10 +2363,10 @@ local function GetAliveTeammates()
 	if not myTeamID then
 		return {}
 	end
-
+	
 	local teammates = {}
 	local playerList = Spring.GetPlayerList()
-
+	
 	for _, playerID in ipairs(playerList) do
 		if playerID ~= myPlayerID then
 			local _, active, isSpec, playerTeamID = spFunc.GetPlayerInfo(playerID, false)
@@ -1127,7 +2379,7 @@ local function GetAliveTeammates()
 			end
 		end
 	end
-
+	
 	return teammates
 end
 
@@ -1259,7 +2511,7 @@ local function UpdatePlayerTracking()
 					-- Use the effective viewing distance (dist or height)
 					-- tan(tilt) gives the ratio of forward distance to height
 					local forwardOffset = math.tan(tiltFromVertical) * effectiveHeight * -0.2
-
+					
 					-- Apply offset in the direction camera is facing (ry = heading/yaw in radians)
 					-- Subtract to shift view toward where camera is actually looking
 					--lookAtX = camX - math.sin(ry) * forwardOffset
@@ -1298,7 +2550,7 @@ local function UpdatePlayerTracking()
 					-- If PIP is half screen size, zoom should be halved to fit same view in smaller space
 					zoomValue = baseZoom * pipSizeRatio
 					-- Clamp to valid zoom range instead of discarding
-					zoomValue = math.max(config.zoomMin, math.min(config.zoomMax, zoomValue))
+					zoomValue = math.max(GetEffectiveZoomMin(), math.min(GetEffectiveZoomMax(), zoomValue))
 				end
 
 				-- Second priority: use height if dist not available
@@ -1309,7 +2561,7 @@ local function UpdatePlayerTracking()
 					-- Adjust zoom based on PIP size
 					zoomValue = baseZoom * pipSizeRatio
 					-- Clamp to valid zoom range instead of discarding
-					zoomValue = math.max(config.zoomMin, math.min(config.zoomMax, zoomValue))
+					zoomValue = math.max(GetEffectiveZoomMin(), math.min(GetEffectiveZoomMax(), zoomValue))
 				end
 
 				-- Apply zoom if we calculated one, but only if change is significant
@@ -1325,46 +2577,43 @@ local function UpdatePlayerTracking()
 		end
 
 		-- Apply map edge margin constraints
-		local pipWidth = render.dim.r - render.dim.l
-		local pipHeight = render.dim.t - render.dim.b
+		local pipWidth, pipHeight = GetEffectivePipDimensions()
 		local visibleWorldWidth = pipWidth / cameraState.targetZoom
 		local visibleWorldHeight = pipHeight / cameraState.targetZoom
-		local smallerVisibleDimension = math.min(visibleWorldWidth, visibleWorldHeight)
-		local margin = smallerVisibleDimension * config.mapEdgeMargin
 
-		local minWcx = visibleWorldWidth / 2 - margin
-		local maxWcx = mapInfo.mapSizeX - (visibleWorldWidth / 2 - margin)
-		local minWcz = visibleWorldHeight / 2 - margin
-		local maxWcz = mapInfo.mapSizeZ - (visibleWorldHeight / 2 - margin)
-
-		cameraState.targetWcx = math.min(math.max(cameraState.targetWcx, minWcx), maxWcx)
-		cameraState.targetWcz = math.min(math.max(cameraState.targetWcz, minWcz), maxWcz)
+		cameraState.targetWcx = ClampCameraAxis(cameraState.targetWcx, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.targetWcz = ClampCameraAxis(cameraState.targetWcz, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 	end
 end
 
 local function PipToWorldCoords(mx, my)
+	-- Get current minimap rotation (must fetch fresh, not use cached render.minimapRotation)
+	local minimapRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+	
+	-- Convert screen coordinates to normalized PIP coordinates (0-1)
+	local normX = (mx - render.dim.l) / (render.dim.r - render.dim.l)
+	local normY = (my - render.dim.b) / (render.dim.t - render.dim.b)
+	
 	-- Apply inverse rotation if minimap is rotated
-	if render.minimapRotation ~= 0 then
-		local centerX = render.dim.l + (render.dim.r - render.dim.l) / 2
-		local centerY = render.dim.b + (render.dim.t - render.dim.b) / 2
-
-		-- Translate to origin
-		local dx = mx - centerX
-		local dy = my - centerY
-
+	if minimapRotation ~= 0 then
+		-- Translate to center (0.5, 0.5)
+		local dx = normX - 0.5
+		local dy = normY - 0.5
+		
 		-- Rotate back (inverse rotation = negative angle)
-		local cosR = math.cos(-render.minimapRotation)
-		local sinR = math.sin(-render.minimapRotation)
+		local cosR = math.cos(-minimapRotation)
+		local sinR = math.sin(-minimapRotation)
 		local rotatedX = dx * cosR - dy * sinR
 		local rotatedY = dx * sinR + dy * cosR
-
+		
 		-- Translate back
-		mx = rotatedX + centerX
-		my = rotatedY + centerY
+		normX = rotatedX + 0.5
+		normY = rotatedY + 0.5
 	end
-
-	return render.world.l + (render.world.r - render.world.l) * ((mx - render.dim.l) / (render.dim.r - render.dim.l)),
-		   render.world.b + (render.world.t - render.world.b) * ((my - render.dim.b) / (render.dim.t - render.dim.b))
+	
+	-- Convert normalized coordinates to world coordinates
+	return render.world.l + (render.world.r - render.world.l) * normX,
+		   render.world.b + (render.world.t - render.world.b) * normY
 end
 local function WorldToPipCoords(wx, wz)
 	-- Use precalculated factors for performance (avoids repeated division)
@@ -1386,9 +2635,35 @@ local function GroundTextureVertices()
 	glFunc.TexCoord(render.ground.coord.l, render.ground.coord.t); glFunc.Vertex(render.ground.view.l, render.ground.view.t)
 end
 
+-- Helper function to compute chamfered corner params based on screen bounds
+-- Returns tl, tr, br, bl (TopLeft, TopRight, BottomRight, BottomLeft)
+-- Corners are disabled (0) when the element touches or exceeds screen bounds
+local function GetChamferedCorners(l, b, r, t)
+	local atLeft = l <= 0
+	local atBottom = b <= 0
+	local atRight = r >= render.vsx
+	local atTop = t >= render.vsy
+	
+	-- tl (TopLeft) - disabled if at left or top edge
+	local tl = (atLeft or atTop) and 0 or 1
+	-- tr (TopRight) - disabled if at right or top edge
+	local tr = (atRight or atTop) and 0 or 1
+	-- br (BottomRight) - disabled if at right or bottom edge
+	local br = (atRight or atBottom) and 0 or 1
+	-- bl (BottomLeft) - disabled if at left or bottom edge
+	local bl = (atLeft or atBottom) and 0 or 1
+	
+	return tl, tr, br, bl
+end
+
 local function DrawPanel(l, r, b, t)
 	glFunc.Color(0.6,0.6,0.6,0.6)
-	render.UiElement(l-render.elementPadding, b-render.elementPadding, r+render.elementPadding, t+render.elementPadding, 1, 1, 1, 1, nil, nil, nil, nil, nil, nil, nil, nil)
+	local padL = l - render.elementPadding
+	local padB = b - render.elementPadding
+	local padR = r + render.elementPadding
+	local padT = t + render.elementPadding
+	local tl, tr, br, bl = GetChamferedCorners(padL, padB, padR, padT)
+	render.UiElement(padL, padB, padR, padT, tl, tr, br, bl, nil, nil, nil, nil, nil, nil, nil, nil)
 end
 
 local function DrawGroundLine(x1, z1, x2, z2)
@@ -1401,17 +2676,17 @@ end
 
 local function DrawGroundBox(l, r, b, t, cornerSize)
 	-- Draw octagon with corners cut off by 16 world units
-
+	
 	-- Handle coordinate system (b and t might be swapped depending on view)
 	local minZ = math.min(b, t)
 	local maxZ = math.max(b, t)
-
+	
 	-- Clamp corner size if rectangle is too small
 	local width = r - l
 	local height = maxZ - minZ
 	local maxCorner = math.min(width, height) / 2
 	local c = math.min(cornerSize, maxCorner)
-
+	
 	-- Draw 8 edges (going clockwise from top-left)
 	-- Top edge (at maxZ)
 	DrawGroundLine(l + c, maxZ, r - c, maxZ)
@@ -1432,143 +2707,94 @@ local function DrawGroundBox(l, r, b, t, cornerSize)
 end
 
 
-local function DrawUnit(uID)
+local function DrawUnit(uID, checkAllyTeamID, playerSelections, trackingSet)
 	local uDefID = spFunc.GetUnitDefID(uID)
 	-- Don't return early if uDefID is nil - unit might be radar-only
 
+	-- Skip crashing aircraft (they should not have icons)
+	-- Crashing state is tracked via CrashingAircraft callback from unit_crashing_aircraft gadget
+	if miscState.crashingUnits[uID] then return end
+
 	local uTeam = spFunc.GetUnitTeam(uID)
-	local ux, uy, uz = spFunc.GetUnitBasePosition(uID)
-	if not ux then return end  -- Early exit if position is invalid
 
-	-- Debug counter for radar blobs
-	local debugRadarBlobCount = 0
-
-	-- Check visibility: either when tracking a player OR for our own team's visibility OR when LOS view is enabled
-	-- Get the ally team we should check visibility for
-	-- Note: trackingPlayerID takes priority over state.losViewEnabled (player tracking overrides LOS view)
-	local checkAllyTeamID = nil
-	local isEnemyUnit = false
-
-	if interactionState.trackingPlayerID and cameraState.mySpecState then
-		-- When tracking a player (as spectator), check their ally team's visibility
-		local _, _, _, playerTeamID = spFunc.GetPlayerInfo(interactionState.trackingPlayerID, false)
-		if playerTeamID then
-			local _, _, _, _, _, playerAllyTeamID = spFunc.GetTeamInfo(playerTeamID, false)
-
-			-- Check if we have fullview - without it we can only see our own allyteam's LOS
-			local _, fullview = Spring.GetSpectatingState()
-			local myAllyTeam = Spring.GetMyAllyTeamID()
-
-			if not fullview and playerAllyTeamID ~= myAllyTeam then
-				-- Tracking enemy player without fullview - use our own allyteam for visibility checks
-				checkAllyTeamID = myAllyTeam
-			else
-				-- Either have fullview or tracking same allyteam - use tracked player's allyteam
-				checkAllyTeamID = playerAllyTeamID
-			end
-
-			local _, _, _, _, _, unitAllyTeamID = spFunc.GetTeamInfo(uTeam, false)
-			isEnemyUnit = (unitAllyTeamID ~= checkAllyTeamID)
-		end
-	elseif state.losViewEnabled and state.losViewAllyTeam then
-		-- When LOS view is enabled (and not tracking a player), check visibility for the locked allyteam
-		checkAllyTeamID = state.losViewAllyTeam
-		local _, _, _, _, _, unitAllyTeamID = spFunc.GetTeamInfo(uTeam, false)
-		isEnemyUnit = (unitAllyTeamID ~= state.losViewAllyTeam)
-	elseif not cameraState.mySpecState then
-		-- When playing (not spectating), check our own ally team's visibility
-		local myTeamID = Spring.GetMyTeamID()
-		local _, _, _, _, _, myAllyTeamID = spFunc.GetTeamInfo(myTeamID, false)
-		checkAllyTeamID = myAllyTeamID
-		local _, _, _, _, _, unitAllyTeamID = spFunc.GetTeamInfo(uTeam, false)
-		isEnemyUnit = (unitAllyTeamID ~= myAllyTeamID)
-	elseif cameraState.mySpecState then
-		-- Spectating without tracking a player - check if we have limited view
-		local _, fullview = Spring.GetSpectatingState()
-		if not fullview then
-			-- Spectating without fullview - check visibility for current allyteam
-			local myAllyTeam = Spring.GetMyAllyTeamID()
-			checkAllyTeamID = myAllyTeam
-			local _, _, _, _, _, unitAllyTeamID = spFunc.GetTeamInfo(uTeam, false)
-			isEnemyUnit = (unitAllyTeamID ~= myAllyTeam)
-		end
-	end
-	-- else: spectator with full view not tracking anyone - skip all visibility checks
-
-	-- Only check visibility for enemy units when we have a specific ally team to check against
-	if checkAllyTeamID and isEnemyUnit then
-		-- Get detailed LOS state
-		local losState = spFunc.GetUnitLosState(uID, checkAllyTeamID)
-		-- losState is a table with: los, prevLos, contRadar, radar, typed
-
-		if not losState then
-			-- No visibility at all, don't draw it
-			return
-		end
-
-		-- Check if unit identity is known (in LOS) or just in radar
-		if losState.los then
-			-- Unit is in LOS - draw normally (continue to icon drawing below)
-		elseif losState.radar then
-			-- Unit is in radar but not in LOS
-			local sx, sy = WorldToPipCoords(ux, uz)
-			local idx = #drawData.radarBlobX + 1
-			drawData.radarBlobX[idx] = sx
-			drawData.radarBlobY[idx] = sy
-			drawData.radarBlobTeam[idx] = uTeam
-			drawData.radarBlobUnitID[idx] = uID  -- Store for wobble calculation
-			-- Only store unit def if the type is actually known to the tracked player
-			-- losState.typed tells us if unit type has been revealed (prevLos or other means)
-			if losState.typed then
-				drawData.radarBlobUdef[idx] = uDefID
-			else
-				drawData.radarBlobUdef[idx] = nil  -- Unknown type - will be drawn as blob
-			end
-			return
-		else
-			-- Not in LOS and not in radar - don't draw
-			return
+	-- Get world position (cached for non-transportable buildings since they don't move)
+	local ux, uz
+	local cachedX = ownBuildingPosX[uID]
+	if cachedX then
+		ux = cachedX
+		uz = ownBuildingPosZ[uID]
+	else
+		local x, _, z = spFunc.GetUnitBasePosition(uID)
+		if not x then return end
+		ux, uz = x, z
+		if uDefID and cache.isBuilding[uDefID] and cache.cantBeTransported[uDefID] then
+			ownBuildingPosX[uID] = ux
+			ownBuildingPosZ[uID] = uz
 		end
 	end
 
-	-- If uDefID is nil at this point, unit shouldn't be drawn as icon (already handled as radar blob or not visible)
+	-- Visibility check: only needed for enemy units when we have a specific ally team to check
+	if checkAllyTeamID then
+		local unitAllyTeam = teamAllyTeamCache[uTeam]
+		if not unitAllyTeam then
+			unitAllyTeam = Spring.GetTeamAllyTeamID(uTeam)
+			teamAllyTeamCache[uTeam] = unitAllyTeam
+		end
+		if unitAllyTeam ~= checkAllyTeamID then
+			-- Enemy unit — check LOS state
+			local losState = spFunc.GetUnitLosState(uID, checkAllyTeamID)
+			if not losState then
+				return  -- No visibility at all
+			end
+			if losState.los then
+				-- In LOS - draw normally (continue to icon drawing below)
+			elseif losState.radar then
+				-- In radar but not in LOS
+				local idx = drawData.radarBlobCount + 1
+				drawData.radarBlobCount = idx
+				drawData.radarBlobX[idx] = worldToPipOffsetX + ux * worldToPipScaleX
+				drawData.radarBlobY[idx] = worldToPipOffsetZ + uz * worldToPipScaleZ
+				drawData.radarBlobTeam[idx] = uTeam
+				drawData.radarBlobUnitID[idx] = uID
+				drawData.radarBlobUdef[idx] = losState.typed and uDefID or nil
+				return
+			else
+				return  -- Not in LOS and not in radar
+			end
+		end
+	end
+
+	-- If uDefID is nil at this point, unit shouldn't be drawn as icon
 	if not uDefID then
 		return
 	end
 
-	glFunc.PushMatrix()
-	glFunc.Translate(ux - cameraState.wcx, cameraState.wcz - uz, 0)
-	-- Store for batched icon drawing later
-	local idx = #drawData.iconTeam + 1
+	-- Store for batched icon drawing later (no matrix push/pop needed — icons are drawn separately)
+	local idx = drawData.iconCount + 1
+	drawData.iconCount = idx
 	drawData.iconTeam[idx] = uTeam
-	drawData.iconX[idx], drawData.iconY[idx] = WorldToPipCoords(ux, uz)
+	drawData.iconX[idx] = worldToPipOffsetX + ux * worldToPipScaleX
+	drawData.iconY[idx] = worldToPipOffsetZ + uz * worldToPipScaleZ
 	drawData.iconUdef[idx] = uDefID
 	drawData.iconUnitID[idx] = uID
-	-- When tracking a player, show their selections instead of our own
-	if interactionState.trackingPlayerID then
-		local playerSelections = WG['allyselectedunits'] and WG['allyselectedunits'].getPlayerSelectedUnits(interactionState.trackingPlayerID)
-		drawData.iconSelected[idx] = playerSelections and playerSelections[uID] or false
+	-- Selection state
+	if playerSelections then
+		drawData.iconSelected[idx] = playerSelections[uID] or false
 	else
 		drawData.iconSelected[idx] = spFunc.IsUnitSelected(uID)
 	end
 	-- Get build progress (1 for finished units, < 1 for units under construction)
 	local _, _, _, _, buildProgress = spFunc.GetUnitHealth(uID)
 	drawData.iconBuildProgress[idx] = buildProgress or 1
-	-- Check if this unit is being tracked
-	local isTracked = false
-	if interactionState.areTracking then
-		for _, trackedID in ipairs(interactionState.areTracking) do
-			if trackedID == uID then
-				isTracked = true
-				drawData.trackedIconIndices[#drawData.trackedIconIndices + 1] = idx
-				break
-			end
-		end
+	-- Check if this unit is being tracked (use set lookup instead of linear scan)
+	if trackingSet and trackingSet[uID] then
+		local tIdx = drawData.trackedCount + 1
+		drawData.trackedCount = tIdx
+		drawData.trackedIconIndices[tIdx] = idx
 	end
-	glFunc.PopMatrix()
 end
 
-local function DrawFeature(fID)
+local function DrawFeature(fID, noTextures)
 	local fDefID = spFunc.GetFeatureDefID(fID)
 	if not fDefID or cache.noModelFeatures[fDefID] then return end
 
@@ -1590,7 +2816,9 @@ local function DrawFeature(fID)
 		glFunc.Translate(fx - cameraState.wcx, cameraState.wcz - fz, 0)
 		glFunc.Rotate(90, 1, 0, 0)
 		glFunc.Rotate(uHeading, 0, 1, 0)
-		glFunc.Texture(0, '%-' .. fDefID .. ':0')
+		if not noTextures then
+			glFunc.Texture(0, '%-' .. fDefID .. ':0')
+		end
 		gl.FeatureShape(fDefID, spFunc.GetFeatureTeam(fID))
 	glFunc.PopMatrix()
 end
@@ -1598,6 +2826,8 @@ end
 local function DrawProjectile(pID)
 	local px, py, pz = spFunc.GetProjectilePosition(pID)
 	if not px then return end
+
+	local resScale = render.contentScale or 1
 
 	-- Get projectile DefID - all projectiles from weapons will have this
 	local pDefID = spFunc.GetProjectileDefID(pID)
@@ -1755,8 +2985,8 @@ local function DrawProjectile(pID)
 
 					-- Precompute zoom-dependent scaling
 					local zoomScale = math.max(0.5, cameraState.zoom / 70)
-					local baseOuterWidth = thickness * 9 * zoomScale
-					local baseInnerWidth = thickness * 2.2 * zoomScale
+					local baseOuterWidth = thickness * 9 * zoomScale * resScale
+					local baseInnerWidth = thickness * 2.2 * zoomScale * resScale
 
 					-- Draw segments
 					local prevX = ox
@@ -1767,11 +2997,9 @@ local function DrawProjectile(pID)
 						local segX, segZ, brightness
 
 						if i == numSegments then
-							-- End at target
 							segX, segZ = tx, tz
 							brightness = 1.2
 						else
-							-- Create jagged middle segment
 							local baseX = ox + dx * i
 							local baseZ = oz + dz * i
 							local perpX = -dz / dist2D
@@ -1783,20 +3011,25 @@ local function DrawProjectile(pID)
 							segZ = baseZ + perpZ * jitter
 						end
 
-						-- Average brightness of the two segment endpoints
 						local avgBrightness = (prevBrightness + brightness) * 0.5
 
-						-- Thickness scales with brightness
+						if gl4Prim.enabled then
+							local coreR = 0.9 + colorData[1] * 0.1
+							local coreG = 0.9 + colorData[2] * 0.1
+							local coreB = 0.95 + colorData[3] * 0.05
+							GL4AddGlowLine(prevX, prevZ, segX, segZ,
+								colorData[1], colorData[2], colorData[3], 0.4 * avgBrightness)
+							GL4AddCoreLine(prevX, prevZ, segX, segZ,
+								coreR, coreG, coreB, 0.98 * avgBrightness)
+						else
 						local segOuterWidth = math.max(6, baseOuterWidth * avgBrightness)
 						local segInnerWidth = math.max(1, baseInnerWidth * avgBrightness)
 
-						-- Transform to screen space
 						local x1 = prevX - cameraState.wcx
 						local z1 = cameraState.wcz - prevZ
 						local x2 = segX - cameraState.wcx
 						local z2 = cameraState.wcz - segZ
 
-						-- Draw outer glow
 						glFunc.LineWidth(segOuterWidth)
 						glFunc.Color(colorData[1], colorData[2], colorData[3], 0.4 * avgBrightness)
 						glFunc.BeginEnd(glConst.LINES, function()
@@ -1804,8 +3037,6 @@ local function DrawProjectile(pID)
 							glFunc.Vertex(x2, z2, 0)
 						end)
 
-						-- Draw inner core (very white with slight blue tint)
-						glFunc.LineWidth(segInnerWidth)
 						local coreR = 0.9 + colorData[1] * 0.1
 						local coreG = 0.9 + colorData[2] * 0.1
 						local coreB = 0.95 + colorData[3] * 0.05
@@ -1814,74 +3045,68 @@ local function DrawProjectile(pID)
 							glFunc.Vertex(x1, z1, 0)
 							glFunc.Vertex(x2, z2, 0)
 						end)
+						end -- end GL4/legacy lightning segment
 
 						-- Move to next segment
 						prevX, prevZ = segX, segZ
 						prevBrightness = brightness
 					end
 
-					glFunc.LineWidth(1)
+					glFunc.LineWidth(1 * resScale)
 
-					-- Draw small explosion effect at target point immediately (instead of caching)
-					-- This is a simple white-blue flash that fades quickly
+					-- Draw small explosion effect at target point immediately
 					local explosionRadius = 8
-					local baseRadius = explosionRadius * 1.0 -- Start at full size
-					local alpha = 1.0 -- Full brightness at impact
-
-					-- White-blue electric color
+					local baseRadius = explosionRadius * 1.0
+					local alpha = 1.0
 					local r, g, b = 0.9, 0.95, 1
 
-					-- Circle drawing constants
+					if gl4Prim.enabled then
+						local glowRadius = baseRadius * 5.8
+						GL4AddCircle(tx, tz, glowRadius, alpha * 0.5,
+							r*0.7, g*0.7, b*0.8,  r*0.4, g*0.4, b*0.5,  0, 0)
+						local coreRadius = baseRadius * 0.4
+						GL4AddCircle(tx, tz, coreRadius, alpha * 0.95,
+							1, 1, 1,  r*0.8, g*0.8, b,  alpha * 0.5, 0)
+					else
+
 					local segments = 24
 					local angleStep = (2 * math.pi) / segments
 
 					glFunc.PushMatrix()
 					glFunc.Translate(tx - cameraState.wcx, cameraState.wcz - tz, 0)
 
-					-- Draw bright outer glow first (bigger)
 					local glowAlpha = alpha * 0.5
 					local glowRadius = baseRadius * 5.8
-
 					for j = 0, segments - 1 do
 						local angle1 = j * angleStep
 						local angle2 = (j + 1) * angleStep
-
 						glFunc.BeginEnd(glConst.TRIANGLES, function()
-							-- Center vertex
 							glFunc.Color(r * 0.7, g * 0.7, b * 0.8, glowAlpha)
 							glFunc.Vertex(0, 0, 0)
-
-							-- Edge vertices (fade out)
 							glFunc.Color(r * 0.4, g * 0.4, b * 0.5, 0)
 							glFunc.Vertex(math.cos(angle1) * glowRadius, math.sin(angle1) * glowRadius, 0)
 							glFunc.Vertex(math.cos(angle2) * glowRadius, math.sin(angle2) * glowRadius, 0)
 						end)
 					end
 
-					-- Draw main flash with brighter core
 					local coreAlpha = alpha * 0.95
 					local edgeAlpha = alpha * 0.5
 					local coreRadius = baseRadius * 0.4
-
 					for j = 0, segments - 1 do
 						local angle1 = j * angleStep
 						local angle2 = (j + 1) * angleStep
-
 						glFunc.BeginEnd(glConst.TRIANGLES, function()
-							-- Center vertex (very bright white-blue)
 							glFunc.Color(1, 1, 1, coreAlpha)
 							glFunc.Vertex(0, 0, 0)
-
-							-- Edge vertices (fade to electric blue)
 							glFunc.Color(r * 0.8, g * 0.8, b, edgeAlpha)
 							glFunc.Vertex(math.cos(angle1) * coreRadius, math.sin(angle1) * coreRadius, 0)
-
 							glFunc.Color(r * 0.8, g * 0.8, b, edgeAlpha)
 							glFunc.Vertex(math.cos(angle2) * coreRadius, math.sin(angle2) * coreRadius, 0)
 						end)
 					end
 
 					glFunc.PopMatrix()
+					end -- end GL4/legacy lightning impact
 
 					return -- Don't draw as a projectile
 				end
@@ -1890,41 +3115,31 @@ local function DrawProjectile(pID)
 
 		-- Check if this is a flame weapon (Flame - particle stream effect)
 		if cache.weaponIsFlame[pDefID] then
-			-- Get weapon color from cached data (typically orange/yellow)
 			local colorData = cache.weaponColor[pDefID]
-
-			-- Draw flame as multiple small particles with random variation
-			-- Use projectile ID and position for seeded randomness
 			local seed = pID * 123.456 + px * 10 + pz * 10
+			local particleSeed = seed * 789.012
+			local offsetX = (math.sin(particleSeed * 12.9898) * 2 - 1) * 4
+			local offsetZ = (math.sin(particleSeed * 78.233) * 2 - 1) * 4
+			local particleSize = 10 + math.abs(math.sin(particleSeed * 43.758)) * 4
+			local colorVariation = math.abs(math.sin(particleSeed * 91.321))
+			local r = 1.0
+			local g = 0.45 + colorVariation * 0.3
+			local b = 0.05
+
+			if gl4Prim.enabled then
+				-- GL4 path: one circle for the flame particle
+				GL4AddCircle(px + offsetX, pz - offsetZ, particleSize, 1.0,
+					math.min(1, r*1.25), math.min(1, g*1.25), math.min(1, b*1.25),
+					r, g, b, 0.6, 0)
+			else
 
 			glFunc.PushMatrix()
 			glFunc.Translate(px - cameraState.wcx, cameraState.wcz - pz, 0)
 
-			local particleSeed = seed * 789.012
-			-- Random offset from projectile position
-			local offsetX = (math.sin(particleSeed * 12.9898) * 2 - 1) * 4
-			local offsetZ = (math.sin(particleSeed * 78.233) * 2 - 1) * 4
-
-			-- Variable particle size (2-6 units)
-			local particleSize = 10 + math.abs(math.sin(particleSeed * 43.758)) * 4
-
-			-- Color variation between particles (0 to 1)
-			local colorVariation = math.abs(math.sin(particleSeed * 91.321))
-
-			-- Draw outer glow (yellow to orange gradient with fade at edges)
-			local glowR = 1.0
-			local glowG = 0.8 + colorVariation * 0.15  -- 0.8 to 0.95 (stays more yellow/orange)
-			local glowB = 0.1 + colorVariation * 0.15   -- 0.1 to 0.25 (slight variation)
-
-			-- Draw middle layer (orange, less red)
-			local r = 1.0
-			local g = 0.45 + colorVariation * 0.3  -- 0.5 to 0.8 (more orange, less red)
-			local b = 0.05
 			local sides = 5
 			glFunc.Color(r*1.25, g*1.25, b*1.25, 1)
 			glFunc.BeginEnd(glConst.TRIANGLE_FAN, function()
-				glFunc.Vertex(offsetX, offsetZ, 0) -- Center
-				-- Create irregular flame-like shape with 6 points
+				glFunc.Vertex(offsetX, offsetZ, 0)
 				glFunc.Color(r, g, b, 0.6)
 				for j = 0, sides do
 					local angle = (j / sides) * math.pi * 2
@@ -1939,6 +3154,7 @@ local function DrawProjectile(pID)
 			end)
 
 			glFunc.PopMatrix()
+			end -- end GL4/legacy flame
 			return -- Don't draw as regular projectile
 		end
 
@@ -2040,9 +3256,153 @@ local function DrawProjectile(pID)
 		if vx and (vx ~= 0 or vz ~= 0) then
 			-- Calculate angle based on velocity direction
 			angle = math.atan2(vx, vz) * mapInfo.rad2deg
+		elseif cache.weaponIsStarburst[pDefID] then
+			-- Starburst missiles launching straight up (only vy) should point upward
+			angle = 180
+		end
+		
+		-- Add smoke trail for missiles (including starburst)
+		do
+			-- Get or create trail data for this projectile
+			local trail = cache.missileTrails[pID]
+			local isStarburst = cache.weaponIsStarburst[pDefID]
+			local isAA = cache.weaponIsAA[pDefID]
+			if not trail then
+				-- Pre-allocate position slots to avoid repeated table creation
+				-- Use ring buffer pattern: positions stored at indices, head points to newest
+				local missileSize = cache.weaponSize[pDefID] or 1
+				trail = {positions = {}, head = 0, count = 0, lastUpdate = 0, isStarburst = isStarburst, isAA = isAA, size = missileSize}
+				cache.missileTrails[pID] = trail
+			end
+			
+			-- Calculate trail length based on zoom level (more positions = longer trail)
+			local zoomNorm = (cameraState.zoom - 0.05) * 1.333  -- Pre-computed: 1/(0.8-0.05) ≈ 1.333
+			if zoomNorm < 0 then zoomNorm = 0 elseif zoomNorm > 1 then zoomNorm = 1 end
+			local maxTrailLength = 2 + math.floor(zoomNorm * 5)  -- 2-7 positions
+			
+			-- Add 1-3 extra positions for fast missiles (speed 5-20+ elmos/frame)
+			if vx then
+				local speed = math.sqrt(vx*vx + vz*vz)
+				local speedBonus = math.floor((speed - 5) * 0.2)  -- +1 per 5 elmos/frame above 5
+				if speedBonus < 0 then speedBonus = 0 elseif speedBonus > 3 then speedBonus = 3 end
+				maxTrailLength = maxTrailLength + speedBonus
+			end
+			
+			-- Starburst missiles need more positions to cover 3x longer trail lifetime
+			-- With 0.12s interval and 2.1s lifetime, need ~18 positions minimum
+			if isStarburst then
+				maxTrailLength = math.max(maxTrailLength, 18)
+			end
+			
+			-- Add current position to trail using ring buffer (O(1) instead of O(n))
+			-- Starburst missiles use 3x longer update interval for longer trails without more positions
+			local trailUpdateInterval = isStarburst and 0.12 or 0.04
+			if gameTime - trail.lastUpdate >= trailUpdateInterval then
+				trail.head = trail.head + 1
+				if trail.head > maxTrailLength then trail.head = 1 end
+				
+				-- Reuse existing position table or create new one
+				local pos = trail.positions[trail.head]
+				if pos then
+					pos.x, pos.z, pos.time = px, pz, gameTime
+				else
+					trail.positions[trail.head] = {x = px, z = pz, time = gameTime}
+				end
+				
+				trail.lastUpdate = gameTime
+				if trail.count < maxTrailLength then
+					trail.count = trail.count + 1
+				end
+			end
+			
+			-- Draw smoke trail (dark semi-transparent lines fading away)
+			local trailCount = trail.count
+			if trailCount >= 2 then
+				-- Longer trailLifetime = slower fade = trail visible longer
+				-- Starburst missiles get 3x longer trails and darker color
+				-- AA missiles get rose pink colored exhaust
+				local trailLifetime, invTrailLifetime, trailColorR, trailColorG, trailColorB
+				if trail.isStarburst then
+					trailLifetime = 1.6  -- 3x longer for starburst
+					invTrailLifetime = 0.625  -- 1/trailLifetime
+					trailColorR, trailColorG, trailColorB = 0.12, 0.12, 0.12  -- Darker smoke
+				elseif trail.isAA then
+					trailLifetime = 0.7
+					invTrailLifetime = 1.4286  -- 1/trailLifetime
+					trailColorR, trailColorG, trailColorB = 0.85, 0.45, 0.55  -- Rose pink
+				else
+					trailLifetime = 0.7
+					invTrailLifetime = 1.4286  -- 1/trailLifetime
+					trailColorR, trailColorG, trailColorB = 0.22, 0.22, 0.22
+				end
+				local wcx, wcz = cameraState.wcx, cameraState.wcz
+				local positions = trail.positions
+				local head = trail.head
+				
+				-- Set line width based on missile size (scaled by zoom and content resolution)
+				local resScale = render.contentScale or 1
+				local trailWidth = math.max(1, (0.8 + trail.size * 0.5) * zoomScale * resScale)
+				glFunc.LineWidth(trailWidth)
+
+				-- Batch all trail lines in a single BeginEnd call
+				glFunc.BeginEnd(glConst.LINES, function()
+					for i = 0, trailCount - 2 do
+						-- Ring buffer indexing: head is newest, go backwards
+						local idx1 = head - i
+						if idx1 < 1 then idx1 = idx1 + maxTrailLength end
+						local idx2 = head - i - 1
+						if idx2 < 1 then idx2 = idx2 + maxTrailLength end
+						
+						local p1 = positions[idx1]
+						local p2 = positions[idx2]
+						if p1 and p2 then
+							-- Calculate fade (simplified: avoid function calls)
+							local fade1 = 1 - (gameTime - p1.time) * invTrailLifetime
+							local fade2 = 1 - (gameTime - p2.time) * invTrailLifetime
+							if fade1 < 0 then fade1 = 0 end
+							if fade2 < 0 then fade2 = 0 end
+							
+							if fade1 > 0 or fade2 > 0 then
+								glFunc.Color(trailColorR, trailColorG, trailColorB, 0.5 * fade1)
+								glFunc.Vertex(p1.x - wcx, wcz - p1.z, 0)
+								glFunc.Color(trailColorR, trailColorG, trailColorB, 0.5 * fade2)
+								glFunc.Vertex(p2.x - wcx, wcz - p2.z, 0)
+							end
+						end
+					end
+				end)
+				glFunc.LineWidth(1 * resScale)
+			end
 		end
 	end
 
+	if gl4Prim.enabled and not (pDefID and cache.weaponIsMissile[pDefID]) then
+		-- GL4 path: add projectile shapes directly in world coords
+		-- (Missiles excluded — they use legacy path for detailed nose/fin geometry)
+		if pDefID and cache.weaponIsBlaster[pDefID] then
+			-- Outer glow quad
+			GL4AddQuad(px, pz, width * 1.3, height, angle, color[1], color[2], color[3], color[4] * 0.4)
+			-- Inner core quad (brighter, whiter)
+			local whiteness = 0.6
+			local coreR = color[1] * (1 - whiteness) + whiteness
+			local coreG = color[2] * (1 - whiteness) + whiteness
+			local coreB = color[3] * (1 - whiteness) + whiteness
+			GL4AddQuad(px, pz, width * 0.6, height, angle, coreR, coreG, coreB, color[4] * 0.95)
+		elseif pDefID and cache.weaponIsPlasma[pDefID] then
+			-- Plasma gradient circle
+			local radius = math.max(width, height)
+			local coreWhiteness = 0.9
+			local coreR = color[1] * (1 - coreWhiteness) + coreWhiteness
+			local coreG = color[2] * (1 - coreWhiteness) + coreWhiteness
+			local coreB = color[3] * (1 - coreWhiteness) + coreWhiteness
+			local orangeTint = 0.4
+			local outerR = math.min(1, color[1] + orangeTint)
+			local outerG = math.max(0, color[2] - orangeTint * 0.3)
+			local outerB = math.max(0, color[3] - orangeTint * 0.5)
+			GL4AddCircle(px, pz, radius, color[4], coreR, coreG, coreB, outerR, outerG, outerB, color[4], 0)
+		end
+	else
+	-- Legacy path
 	glFunc.PushMatrix()
 		glFunc.Translate(px - cameraState.wcx, cameraState.wcz - pz, 0)
 
@@ -2173,6 +3533,7 @@ local function DrawProjectile(pID)
 		end
 
 	glFunc.PopMatrix()
+	end -- end GL4/legacy body
 end
 
 local function DrawLaserBeams()
@@ -2181,6 +3542,7 @@ local function DrawLaserBeams()
 	local i = 1
 
 	-- Precompute zoom-dependent scaling once
+	local resScale = render.contentScale or 1
 	local zoomScale = math.max(0.5, cameraState.zoom / 70)
 	local wcx_cached = cameraState.wcx  -- Cache these for loop
 	local wcz_cached = cameraState.wcz
@@ -2230,9 +3592,24 @@ local function DrawLaserBeams()
 			-- Check if this is a lightning bolt (segmented) or regular laser beam
 			if beam.isLightning then
 				-- Draw lightning bolt with jagged segments
-				local alpha = 1 - (age / 0.15) -- Fade out over lifetime				-- Base beam widths
-				local baseOuterWidth = beam.thickness * 9 * zoomScale
-				local baseInnerWidth = beam.thickness * 2.2 * zoomScale
+				local alpha = 1 - (age / 0.15) -- Fade out over lifetime
+				local baseOuterWidth = beam.thickness * 9 * zoomScale * resScale
+				local baseInnerWidth = beam.thickness * 2.2 * zoomScale * resScale
+
+				if gl4Prim.enabled then
+					for j = 1, #beam.segments - 1 do
+						local seg1 = beam.segments[j]
+						local seg2 = beam.segments[j + 1]
+						local avgBrightness = (seg1.brightness + seg2.brightness) * 0.5
+						local coreR = 0.9 + beam.r * 0.1
+						local coreG = 0.9 + beam.g * 0.1
+						local coreB = 0.95 + beam.b * 0.05
+						GL4AddGlowLine(seg1.x, seg1.z, seg2.x, seg2.z,
+							beam.r, beam.g, beam.b, alpha * 0.4 * avgBrightness)
+						GL4AddCoreLine(seg1.x, seg1.z, seg2.x, seg2.z,
+							coreR, coreG, coreB, alpha * 0.98 * avgBrightness)
+					end
+				else
 
 				-- Draw segments individually with variable brightness and thickness
 				for j = 1, #beam.segments - 1 do
@@ -2256,7 +3633,6 @@ local function DrawLaserBeams()
 
 					-- Draw inner core (thinner, brighter, whiter)
 					glFunc.LineWidth(segInnerWidth)
-					-- Make lightning core very white with slight blue tint, scaled by brightness
 					local coreR = 0.9 + beam.r * 0.1
 					local coreG = 0.9 + beam.g * 0.1
 					local coreB = 0.95 + beam.b * 0.05
@@ -2266,13 +3642,25 @@ local function DrawLaserBeams()
 						glFunc.Vertex(seg2.x - wcx_cached, wcz_cached - seg2.z, 0)
 					end)
 				end
+				end -- end GL4/legacy lightning beam
 			else
 				-- Draw regular laser beam as a line with glow effect
 				local alpha = 1 - (age / 0.15) -- Fade out over lifetime
 
+				if gl4Prim.enabled then
+					local whiteness = 0.5 + (beam.thickness / 16) * 0.3
+					local coreR = beam.r * (1 - whiteness) + whiteness
+					local coreG = beam.g * (1 - whiteness) + whiteness
+					local coreB = beam.b * (1 - whiteness) + whiteness
+					GL4AddGlowLine(beam.ox, beam.oz, beam.tx, beam.tz,
+						beam.r, beam.g, beam.b, alpha * 0.3)
+					GL4AddCoreLine(beam.ox, beam.oz, beam.tx, beam.tz,
+						coreR, coreG, coreB, alpha * 0.95)
+				else
+
 				-- Precompute beam widths once
-				local outerWidth = math.max(2, beam.thickness * 3 * zoomScale)
-				local innerWidth = math.max(1, beam.thickness * 1.5 * zoomScale)
+				local outerWidth = math.max(2 * resScale, beam.thickness * 3 * zoomScale * resScale)
+				local innerWidth = math.max(1 * resScale, beam.thickness * 1.5 * zoomScale * resScale)
 
 				-- Precompute vertex positions
 				local ox = beam.ox - wcx_cached
@@ -2290,8 +3678,7 @@ local function DrawLaserBeams()
 
 				-- Draw inner core (thinner, brighter, whiter)
 				glFunc.LineWidth(innerWidth)
-				-- Blend weapon color with white for brighter core
-				local whiteness = 0.5 + (beam.thickness / 16) * 0.3  -- 0.5 to 0.8 based on thickness
+				local whiteness = 0.5 + (beam.thickness / 16) * 0.3
 				local coreR = beam.r * (1 - whiteness) + whiteness
 				local coreG = beam.g * (1 - whiteness) + whiteness
 				local coreB = beam.b * (1 - whiteness) + whiteness
@@ -2300,6 +3687,7 @@ local function DrawLaserBeams()
 					glFunc.Vertex(ox, oz, 0)
 					glFunc.Vertex(tx, tz, 0)
 				end)
+				end -- end GL4/legacy regular beam
 			end
 
 				i = i + 1
@@ -2308,7 +3696,7 @@ local function DrawLaserBeams()
 	end
 
 	-- Reset line width once at the end
-	glFunc.LineWidth(1)
+	glFunc.LineWidth(1 * resScale)
 end
 
 local function DrawIconShatters()
@@ -2407,7 +3795,7 @@ local function DrawIconShatters()
 					uvy2 = frag.uvy2,
 					r = shatter.teamR,
 					g = shatter.teamG,
-				b = shatter.teamB
+					b = shatter.teamB
 				}
 			end
 
@@ -2448,7 +3836,7 @@ end
 -- Draw seismic pings as animated rotating arcs (matching the gadget draw style)
 local function DrawSeismicPings()
 	if #cache.seismicPings == 0 then return end
-
+	
 	local i = 1
 	local wcx_cached = cameraState.wcx
 	local wcz_cached = cameraState.wcz
@@ -2613,9 +4001,13 @@ end
 local function DrawExplosions()
 	if #cache.explosions == 0 then return end
 
+	local resScale = render.contentScale or 1
 	local i = 1
 	local wcx_cached = cameraState.wcx
 	local wcz_cached = cameraState.wcz
+	
+	-- Current zoom level for graduated visibility check
+	local currentZoom = cameraState.zoom
 
 	mapInfo.rad2deg = 57.29577951308232 -- Precompute radians to degrees conversion
 
@@ -2627,6 +4019,22 @@ local function DrawExplosions()
 
 	while i <= #cache.explosions do
 		local explosion = cache.explosions[i]
+		if not explosion or not explosion.x then
+			table.remove(cache.explosions, i)
+		else
+		-- Graduated visibility: larger explosions visible at lower zoom levels
+		-- radius 100+: always visible
+		-- radius 60-100: visible at zoom >= 0.04
+		-- radius 40-60: visible at zoom >= 0.06
+		-- radius 20-40: visible at zoom >= 0.09
+		-- radius < 20: visible at zoom >= 0.12
+		local minZoom = 0
+		if explosion.radius < 100 then
+			minZoom = math.max(0, 0.14 - explosion.radius * 0.0014)
+		end
+		if currentZoom < minZoom then
+			i = i + 1
+		else
 		local age = gameTime - explosion.startTime
 
 		-- Remove explosions older than 0.8 seconds (longer for large explosions)
@@ -2669,8 +4077,39 @@ local function DrawExplosions()
 				if explosion.isLightning then
 					-- Lightning explosion: small white-blue flash with sparks
 					local baseRadius = 16.2 * (0.5 + progress * 2.0) -- 35% larger (12 * 1.35 = 16.2)
-					local alpha = (1 - progress) * (1 - progress) -- Faster fade				-- White-blue electric color
+					local alpha = (1 - progress) * (1 - progress) -- Faster fade
 					local r, g, b = 0.9, 0.95, 1
+
+					if gl4Prim.enabled then
+						-- GL4 path: two gradient circles (glow + core)
+						local glowAlpha = alpha * 0.5
+						local glowRadius = baseRadius * 1.8
+						GL4AddCircle(explosion.x, explosion.z, glowRadius, glowAlpha,
+							r*0.7, g*0.7, b*0.8,  r*0.4, g*0.4, b*0.5,  0, 0)
+						local coreAlpha = alpha * 0.95
+						local edgeAlpha = alpha * 0.5
+						local coreRadius = baseRadius * 0.4
+						GL4AddCircle(explosion.x, explosion.z, coreRadius, coreAlpha,
+							1, 1, 1,  r*0.8, g*0.8, b,  edgeAlpha, 0)
+						-- GL4 sparks as norm lines
+						for k = 1, #explosion.particles do
+							local particle = explosion.particles[k]
+							local particleAge = age
+							local particleProgress = particleAge / particle.life
+							if particleProgress < 1 then
+								particle.x = particle.x + particle.vx * (1/30)
+								particle.z = particle.z + particle.vz * (1/30)
+								local sparkAlpha = (1 - particleProgress) * 0.9
+								local sparkDirX = particle.vx * 0.3
+								local sparkDirZ = particle.vz * 0.3
+								-- Sparks use PIP-local Y coords (= -worldZ), so flip Z for GL4 world coords
+								GL4AddNormLine(
+									explosion.x + particle.x - sparkDirX, explosion.z - particle.z + sparkDirZ,
+									explosion.x + particle.x + sparkDirX, explosion.z - particle.z - sparkDirZ,
+									r, g, b, sparkAlpha)
+							end
+						end
+					else
 
 					glFunc.PushMatrix()
 					glFunc.Translate(explosion.x - wcx_cached, wcz_cached - explosion.z, 0)
@@ -2738,7 +4177,7 @@ local function DrawExplosions()
 							local sparkDirX = particle.vx * 0.3
 							local sparkDirZ = particle.vz * 0.3
 
-							glFunc.LineWidth(math.max(1, particle.size * 0.8))
+							glFunc.LineWidth(math.max(1 * resScale, particle.size * 0.8 * resScale))
 							glFunc.Color(r, g, b, sparkAlpha)
 							glFunc.BeginEnd(glConst.LINES, function()
 								glFunc.Vertex(particle.x - sparkDirX, particle.z - sparkDirZ, 0)
@@ -2748,6 +4187,7 @@ local function DrawExplosions()
 					end
 
 					glFunc.PopMatrix()
+					end -- end GL4/legacy branch for lightning explosions
 				else
 					-- Normal explosion rendering
 					-- Scale down big explosions by 25% (multiply radius by 0.75)
@@ -2759,56 +4199,64 @@ local function DrawExplosions()
 					local baseRadius = effectiveRadius * (0.3 + progress * 1.7) -- Expands to 2x size
 					local alpha = 1 - progress                  -- Fades out
 
-					-- Add pulsing effect
-					local pulseScale = 1 + math.sin(progress * math.pi * 4) * 0.1
-
 					-- Color based on size: small = yellow, large = red-orange to white (nuke-like)
 					local r, g, b
 					if explosion.isParalyze then
-						-- Paralyze explosions: blue-white-ish
 						r, g, b = 0.75, 0.85, 1
+					elseif explosion.isAA then
+						r, g, b = 1, 0.6, 0.7
 					elseif explosion.radius > 150 then
-						-- Nuke explosions: white to yellow-orange
 						r, g, b = 1, 0.9, 0.6
 					elseif explosion.radius > 80 then
-						-- Large explosions: orange-yellow
 						r, g, b = 1, 0.7, 0.2
 					else
-						-- Normal explosions: yellow to orange
 						r, g, b = 1, 0.8 - (explosion.radius / 200), 0
 					end
-
-					glFunc.PushMatrix()
-					glFunc.Translate(explosion.x - wcx_cached, wcz_cached - explosion.z, 0)
-
-					-- Apply rotation (use precalculated mapInfo.rad2deg)
-					--local rotation = explosion.rotationSpeed * age * mapInfo.rad2deg
-					--glFunc.Rotate(rotation, 0, 0, 1)
 
 					-- Bigger explosions are more opaque
 					local coreAlpha = alpha
 					local edgeAlpha = alpha * 0.85
 					if explosion.radius > 150 then
-						coreAlpha = math.min(1, alpha * 1.2) -- Nukes more opaque
+						coreAlpha = math.min(1, alpha * 1.2)
 						edgeAlpha = math.min(1, alpha * 1.1)
 					elseif explosion.radius > 80 then
-						coreAlpha = math.min(1, alpha * 1.1) -- Large explosions more opaque
+						coreAlpha = math.min(1, alpha * 1.1)
 						edgeAlpha = math.min(1, alpha * 0.95)
 					end
 
+					if gl4Prim.enabled then
+						-- GL4 path: one gradient circle for main body
+						GL4AddCircle(explosion.x, explosion.z, baseRadius, coreAlpha,
+							r, g, b,  r, g, b,  edgeAlpha, 0)
+						-- Nuke/paralyze flash as second brighter circle
+						if (explosion.isParalyze or explosion.radius > 150) and actualProgress < 0.45 then
+							local flashProgress = actualProgress / 0.45
+							local flashAlpha = (1 - flashProgress) * alpha
+							local flashRadius = baseRadius * 0.9
+							if explosion.isParalyze then
+								GL4AddCircle(explosion.x, explosion.z, flashRadius, flashAlpha,
+									0.65, 0.7, 1,  0.65, 0.7, 1,  flashAlpha * 0.5, 0)
+							else
+								GL4AddCircle(explosion.x, explosion.z, flashRadius, flashAlpha,
+									1, 1, 1,  1, 1, 1,  flashAlpha * 0.5, 0)
+							end
+						end
+					else
+
+					glFunc.PushMatrix()
+					glFunc.Translate(explosion.x - wcx_cached, wcz_cached - explosion.z, 0)
+
 					local ringProgress = math.max(0, progress * 0.12) -- Stagger more tightly
 					if ringProgress > 0 then
-						-- Normalize ringProgress to 0-1 range for proper fading (max is 0.12)
 						local ringAlpha = (1 - math.min(1, ringProgress / 0.12)) * alpha * 0.8
 						local ringRadius = baseRadius * (0.8 + ringProgress * 0.4)
-						-- Thicker lines for bigger explosions
 						local lineWidth = 4
 						if explosion.radius > 150 then
 							lineWidth = 6
 						elseif explosion.radius > 80 then
 							lineWidth = 5
 						end
-						glFunc.LineWidth(lineWidth)
+						glFunc.LineWidth(lineWidth * resScale)
 						glFunc.Color(r, g, b, ringAlpha)
 						glFunc.BeginEnd(glConst.LINE_LOOP, function()
 							for j = 0, segments do
@@ -2820,7 +4268,6 @@ local function DrawExplosions()
 
 					-- Add extra bright flash for massive explosions at the start
 					if (explosion.isParalyze or explosion.radius > 150) and actualProgress < 0.45 then
-						-- Flash only in first part of explosion
 						local flashProgress = actualProgress / 0.45
 						local flashAlpha = (1 - flashProgress) * alpha
 						local flashRadius = baseRadius * 0.9
@@ -2839,12 +4286,15 @@ local function DrawExplosions()
 					end
 
 					glFunc.PopMatrix()
+					end -- end GL4/legacy branch for normal explosions
 				end
 				i = i + 1
 			end
 		end
+		end -- end of graduated visibility else block
+		end -- end of "if not explosion" else block
 	end
-	glFunc.LineWidth(1)
+	glFunc.LineWidth(1 * resScale)
 end
 
 local function GetUnitAtPoint(wx, wz)
@@ -2872,7 +4322,7 @@ local function GetUnitAtPoint(wx, wz)
 
 	local factoryID
 	local radarUnitID  -- Store highest priority radar-only unit
-
+	
 	-- Iterate backwards to respect draw order (units drawn last are on top)
 	for i = #miscState.pipUnits, 1, -1 do
 		local uID = miscState.pipUnits[i]
@@ -2896,7 +4346,7 @@ local function GetUnitAtPoint(wx, wz)
 				-- Check if this unit is only visible via radar (not in LOS)
 				local losState = spFunc.GetUnitLosState(uID, checkAllyTeamID)
 				local isRadarOnly = losState and losState.radar and not losState.los
-
+				
 				if isRadarOnly then
 					-- Radar-only units have highest priority (drawn on top)
 					if not radarUnitID then
@@ -2916,7 +4366,7 @@ local function GetUnitAtPoint(wx, wz)
 			end
 		end
 	end
-
+	
 	-- Return in priority order: radar units > regular units > factories
 	return radarUnitID or factoryID
 end
@@ -2980,6 +4430,25 @@ local function GetUnitsInBox(x1, y1, x2, y2)
 end
 
 local function UnitQueueVertices(uID)
+	-- Try cached waypoints first (populated by DrawCommandQueuesOverlay, ~1 frame old)
+	-- Avoids GetUnitCommands allocation (~60 tables per unit per call)
+	local cached = cmdQueueCache.waypoints[uID]
+	if cached and cached.n > 0 then
+		local ux, _, uz = spFunc.GetUnitPosition(uID)
+		if not ux then return end
+		local px, pz = WorldToPipCoords(ux, uz)
+		for i = 1, cached.n do
+			local wp = cached[i]
+			local nx, nz = WorldToPipCoords(wp[1], wp[2])
+			glFunc.Color(cmdColors[wp[3]] or cmdColors.unknown)
+			glFunc.Vertex(px, pz)
+			glFunc.Vertex(nx, nz)
+			px, pz = nx, nz
+		end
+		return
+	end
+	
+	-- Fallback: fetch commands directly (first frame or uncached unit)
 	local uCmds = spFunc.GetUnitCommands(uID, 50)
 	if not uCmds or #uCmds == 0 then return end
 	local ux, uy, uz = spFunc.GetUnitPosition(uID)
@@ -3626,11 +5095,8 @@ function widget:Initialize()
 		if uDef.iconType and iconTypes[uDef.iconType] and iconTypes[uDef.iconType].bitmap then
 			cache.unitIcon[uDefID] = iconTypes[uDef.iconType]
 		end
-		-- Cache unitpic path (buildpic texture)
-		local unitpicPath = 'unitpics/' .. uDef.name .. '.dds'
-		if VFS.FileExists(unitpicPath) then
-			cache.unitPic[uDefID] = unitpicPath
-		end
+		-- Cache unitpic path using engine's #unitDefID syntax (handles all buildpic variations automatically)
+		cache.unitPic[uDefID] = '#' .. uDefID
 
 		-- Cache transport properties
 		if uDef.isTransport then
@@ -3656,7 +5122,22 @@ function widget:Initialize()
 		if uDef.isBuilding then
 			cache.isBuilding[uDefID] = true
 		end
+		if uDef.customParams and uDef.customParams.iscommander then
+			cache.isCommander[uDefID] = true
+		end
+		cache.unitCost[uDefID] = uDef.metalCost + uDef.energyCost / 60
 
+		-- Pre-compute icon draw layer for GL4 rendering (determines render order)
+		if uDef.canFly then
+			gl4Icons.unitDefLayer[uDefID] = GL4_LAYER_AIR
+		elseif uDef.customParams and uDef.customParams.iscommander then
+			gl4Icons.unitDefLayer[uDefID] = GL4_LAYER_COMMANDER
+		elseif uDef.isBuilding then
+			gl4Icons.unitDefLayer[uDefID] = GL4_LAYER_STRUCTURE
+		else
+			gl4Icons.unitDefLayer[uDefID] = GL4_LAYER_GROUND
+		end
+		
 		-- Cache combat properties
 		if uDef.weapons and #uDef.weapons > 0 then
 			-- Check if unit has any non-shield weapons
@@ -3701,7 +5182,7 @@ function widget:Initialize()
 			pipR2T.losTex = nil
 		end
 	end
-
+	
 	-- Initialize water shader if map has water
 	if mapInfo.hasWater then
 		waterShader = gl.CreateShader(waterShaderCode)
@@ -3722,6 +5203,9 @@ function widget:Initialize()
 			cache.weaponIsPlasma[wDefID] = true -- Cannon/PlasmaCannon = traveling ball projectile
 		elseif wDef.type == "MissileLauncher" or wDef.type == "StarburstLauncher" or wDef.type == "TorpedoLauncher" then
 			cache.weaponIsMissile[wDefID] = true
+			if wDef.type == "StarburstLauncher" then
+				cache.weaponIsStarburst[wDefID] = true
+			end
 		elseif wDef.type == "LightningCannon" then
 			cache.weaponIsLightning[wDefID] = true
 		elseif wDef.type == "Flame" then
@@ -3764,35 +5248,114 @@ function widget:Initialize()
 		if wDef.name and string.find(string.lower(wDef.name), "footstep") then
 			cache.weaponSkipExplosion[wDefID] = true
 		end
-
+	
 	-- Check if weapon is paralyze damage
 	if wDef.damages and wDef.damages.paralyzeDamageTime and wDef.damages.paralyzeDamageTime > 0 then
 		cache.weaponIsParalyze[wDefID] = true
+	end
+	
+	-- Check if weapon is anti-air via cegTag
+	if wDef.cegTag and string.find(wDef.cegTag, 'aa') then
+		cache.weaponIsAA[wDefID] = true
 	end
 end
 
 gameHasStarted = (Spring.GetGameFrame() > 0)
 miscState.startX, _, miscState.startZ = Spring.GetTeamStartPosition(Spring.GetMyTeamID())
 
--- For spectators on first maximize, center on map and zoom out more
+-- Initialize GL4 instanced icon rendering (after cache is built so unitIcon data is available)
+InitGL4Icons()
+InitGL4Primitives()
+
+-- Ghost building sharing: merge data from any already-running sibling PIP
+-- This ensures all PIP instances share the same ghost history even on partial reload
+for n = 0, 4 do
+	if n ~= pipNumber and WG['pip' .. n] and WG['pip' .. n].GetGhostBuildings then
+		local siblingGhosts = WG['pip' .. n].GetGhostBuildings()
+		if siblingGhosts then
+			for gID, ghost in pairs(siblingGhosts) do
+				if not ghostBuildings[gID] then
+					ghostBuildings[gID] = { defID = ghost.defID, x = ghost.x, z = ghost.z, teamID = ghost.teamID }
+				end
+			end
+			break  -- All PIPs share the same LOS perspective, one source is sufficient
+		end
+	end
+end
+
+-- Scan currently-visible enemy buildings for ghost tracking (handles luaui reload mid-game)
+-- UnitEnteredLos won't fire for units already in LOS at widget init, so we pre-populate here
+if not Spring.GetSpectatingState() then
+	local myAllyTeam = Spring.GetMyAllyTeamID()
+	local allUnits = Spring.GetAllUnits()
+	for _, uID in ipairs(allUnits) do
+		local defID = Spring.GetUnitDefID(uID)
+		if defID and cache.isBuilding[defID] and not Spring.IsUnitAllied(uID) then
+			local x, _, z = Spring.GetUnitBasePosition(uID)
+			if x then
+				ghostBuildings[uID] = { defID = defID, x = x, z = z, teamID = Spring.GetUnitTeam(uID) }
+			end
+		end
+	end
+end
+
+-- For spectators, center on map and zoom out more (always on new game, even if has saved config)
 local isSpectator = Spring.GetSpectatingState()
-if isSpectator and not miscState.hadSavedConfig then
+local gameFrame = Spring.GetGameFrame()
+local currentGameID = Game.gameID and Game.gameID or Spring.GetGameRulesParam("GameID")
+-- Check if this is a new game by comparing with any saved gameID from SetConfigData
+local isNewGame = not miscState.savedGameID or miscState.savedGameID ~= currentGameID
+if isSpectator and isNewGame then
 	-- Center on map
 	cameraState.wcx = mapInfo.mapSizeX / 2
 	cameraState.wcz = mapInfo.mapSizeZ / 2
 	cameraState.targetWcx = cameraState.wcx
 	cameraState.targetWcz = cameraState.wcz
-	-- Zoom out more to see more of the map
-	cameraState.zoom = 0.3
-	cameraState.targetZoom = 0.3
+	-- Zoom out to cover most of the map
+	cameraState.zoom = 0.1
+	cameraState.targetZoom = 0.1
 elseif (not cameraState.wcx or not cameraState.wcz) and miscState.startX and miscState.startX >= 0 then
 	-- Only set camera position if not already loaded from config (for players)
-	cameraState.wcx, cameraState.wcz = miscState.startX, miscState.startZ
+	-- Set zoom to 0.5 for players
+	cameraState.zoom = 0.5
+	cameraState.targetZoom = 0.5
+	-- Apply map margin limits to start position
+	local pipWidth, pipHeight = GetEffectivePipDimensions()
+	local visibleWorldWidth = pipWidth / cameraState.zoom
+	local visibleWorldHeight = pipHeight / cameraState.zoom
+	cameraState.wcx = ClampCameraAxis(miscState.startX, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+	cameraState.wcz = ClampCameraAxis(miscState.startZ, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 	cameraState.targetWcx, cameraState.targetWcz = cameraState.wcx, cameraState.wcz  -- Initialize targets
 end
 
--- Always minimize PIP when first starting (only on fresh start, not on reload)
-if not uiState.inMinMode and not miscState.hadSavedConfig then
+-- Minimap mode: hide the engine minimap since we're replacing it
+if isMinimapMode then
+	-- Store original minimap geometry and minimize state for restoration on shutdown
+	miscState.oldMinimapGeometry = Spring.GetMiniMapGeometry()
+	miscState.oldMinimapMinimized = Spring.GetConfigInt("MinimapMinimize", 0)
+	-- Minimize the engine minimap so it doesn't render
+	Spring.SendCommands("minimap minimize 1")
+	-- Disable the gui_minimap widget if it's running (we're replacing it)
+	-- Use FindWidget which works reliably during luaui reload
+	if widgetHandler:FindWidget("Minimap") then
+		widgetHandler:DisableWidget("Minimap")
+	end
+	
+	-- In minimap mode, don't start minimized and center on map
+	uiState.inMinMode = false
+	-- Only reset camera if not restored from config (luaui reload)
+	if not miscState.minimapCameraRestored then
+		cameraState.wcx = mapInfo.mapSizeX / 2
+		cameraState.wcz = mapInfo.mapSizeZ / 2
+		cameraState.targetWcx = cameraState.wcx
+		cameraState.targetWcz = cameraState.wcz
+		-- Start zoomed out to see full map (will be adjusted based on aspect ratio in ViewResize)
+		cameraState.zoom = 0.1
+		cameraState.targetZoom = 0.1
+	end
+else
+	-- Always minimize PIP when first starting (only on fresh start, not on reload)
+	if not uiState.inMinMode and not miscState.hadSavedConfig then
 		uiState.savedDimensions = {
 			l = render.dim.l,
 			r = render.dim.r,
@@ -3800,6 +5363,7 @@ if not uiState.inMinMode and not miscState.hadSavedConfig then
 			t = render.dim.t
 		}
 	end
+end
 
 	widget:ViewResize()
 
@@ -3831,7 +5395,7 @@ if not uiState.inMinMode and not miscState.hadSavedConfig then
 			if playerID == myPlayerID then
 				return false
 			end
-
+			
 			local name, _, isSpec = spFunc.GetPlayerInfo(playerID, false)
 			if name and not isSpec then
 				interactionState.trackingPlayerID = playerID
@@ -3856,6 +5420,99 @@ if not uiState.inMinMode and not miscState.hadSavedConfig then
 	WG['pip'..pipNumber].GetTrackedPlayer = function()
 		return interactionState.trackingPlayerID
 	end
+	-- API for minimap mode: get visible world area
+	WG['pip'..pipNumber].IsMinimapMode = function()
+		return isMinimapMode
+	end
+	WG['pip'..pipNumber].GetVisibleWorldArea = function()
+		-- Returns the visible world coordinates: left, right, bottom, top
+		return render.world.l, render.world.r, render.world.b, render.world.t
+	end
+	WG['pip'..pipNumber].GetScreenBounds = function()
+		-- Returns the screen coordinates of the PIP
+		return render.dim.l, render.dim.r, render.dim.b, render.dim.t
+	end
+	WG['pip'..pipNumber].IsMinimized = function()
+		return uiState.inMinMode
+	end
+	WG['pip'..pipNumber].GetZoom = function()
+		return cameraState.zoom
+	end
+	WG['pip'..pipNumber].GetCameraCenter = function()
+		return cameraState.wcx, cameraState.wcz
+	end
+	-- Expose ghost building cache so sibling PIPs can share data on reload
+	WG['pip'..pipNumber].GetGhostBuildings = function()
+		return ghostBuildings
+	end
+
+	-- In minimap mode, also register as WG.pip_minimap for compatibility
+	if isMinimapMode then
+		WG.pip_minimap = WG['pip'..pipNumber]
+		-- Also expose getHeight like the original minimap widget for topbar compatibility
+		WG.pip_minimap.getHeight = function()
+			local padding = WG.FlowUI and WG.FlowUI.elementPadding or 5
+			return (render.dim.t - render.dim.b) + padding
+		end
+		
+		-- Register as WG['minimap'] for full compatibility with widgets expecting the original minimap API
+		WG['minimap'] = {}
+		WG['minimap'].getHeight = function()
+			local padding = WG.FlowUI and WG.FlowUI.elementPadding or 5
+			return (render.dim.t - render.dim.b) + padding
+		end
+		WG['minimap'].getMaxHeight = function()
+			return math.floor(config.minimapModeMaxHeight * render.vsy), config.minimapModeMaxHeight
+		end
+		WG['minimap'].setMaxHeight = function(value)
+			config.minimapModeMaxHeight = value
+			widget:ViewResize()
+		end
+		WG['minimap'].getLeftClickMove = function()
+			return config.leftButtonPansCamera
+		end
+		WG['minimap'].setLeftClickMove = function(value)
+			config.leftButtonPansCamera = value
+		end
+		-- API for widgetHandler to detect PIP minimap mode and get transformation info
+		WG['minimap'].isPipMinimapActive = function()
+			return true  -- Always true when this widget is active in minimap mode
+		end
+		-- Flag set during DrawInMiniMap calls from PIP (widgets can check this)
+		WG['minimap'].isDrawingInPip = false
+		-- Get the screen bounds of the PIP minimap for the widgetHandler to use
+		WG['minimap'].getScreenBounds = function()
+			return render.dim.l, render.dim.b, render.dim.r, render.dim.t
+		end
+		-- Get the world coordinates visible in the PIP
+		WG['minimap'].getVisibleWorldArea = function()
+			return render.world.l, render.world.r, render.world.b, render.world.t
+		end
+		-- Get the current minimap rotation
+		WG['minimap'].getRotation = function()
+			return render.minimapRotation or 0
+		end
+		-- Get normalized visible area for GL4 shader widgets (startbox, point_tracker, etc.)
+		-- Returns left, right, bottom, top in [0,1] world-normalized coords (NOT Y-flipped)
+		WG['minimap'].getNormalizedVisibleArea = function()
+			local normVisLeft = render.world.l / mapInfo.mapSizeX
+			local normVisRight = render.world.r / mapInfo.mapSizeX
+			local normVisBottom = render.world.b / mapInfo.mapSizeZ
+			local normVisTop = render.world.t / mapInfo.mapSizeZ
+			return normVisLeft, normVisRight, normVisBottom, normVisTop
+		end
+		-- Get zoom level (1.0 = full map visible, >1 = zoomed in)
+		WG['minimap'].getZoomLevel = function()
+			return mapInfo.mapSizeX / (render.world.r - render.world.l)
+		end
+		-- Get/set whether to show spectator pings on the PIP minimap
+		WG['minimap'].getShowSpectatorPings = function()
+			return config.showSpectatorPings
+		end
+		WG['minimap'].setShowSpectatorPings = function(value)
+			config.showSpectatorPings = value
+		end
+	end
 
 	for i = 1, #buttons do
 		local button = buttons[i]
@@ -3869,6 +5526,9 @@ if not uiState.inMinMode and not miscState.hadSavedConfig then
 			elseif button.command == 'pip_switch' then
 				Spring.SendCommands("unbindkeyset shift+q")
 				Spring.SendCommands("bind shift+q pip_switch")
+			elseif button.command == 'pip_track' then
+				Spring.SendCommands("unbindkeyset alt+a")
+				Spring.SendCommands("bind alt+a pip_track")
 			end
 		end
 	end
@@ -3882,18 +5542,131 @@ function widget:ViewResize()
 	font = WG['fonts'].getFont(2)
 
 	local oldVsx, oldVsy = render.vsx, render.vsy
-	-- Ensure dim fields are initialized before arithmetic operations
-	if render.dim.l and render.dim.r and render.dim.b and render.dim.t then
-		render.dim.l, render.dim.r, render.dim.b, render.dim.t = render.dim.l/oldVsx, render.dim.r/oldVsx, render.dim.b/oldVsy, render.dim.t/oldVsy
-	else
-		-- Initialize with default values if not set
-		render.dim.l = 0.7
-		render.dim.r = 0.7 + (config.minPanelSize * render.widgetScale * 1.4) / oldVsx
-		render.dim.b = 0.7
-		render.dim.t = 0.7 + (config.minPanelSize * render.widgetScale * 1.2) / oldVsy
-	end
 	render.vsx, render.vsy = Spring.GetViewGeometry()
-	render.dim.l, render.dim.r, render.dim.b, render.dim.t = math.floor(render.dim.l*render.vsx), math.floor(render.dim.r*render.vsx), math.floor(render.dim.b*render.vsy), math.floor(render.dim.t*render.vsy)
+	
+	-- In minimap mode, calculate position and size like the minimap widget does
+	if isMinimapMode then
+		-- Use mapEdgeMargin = 0 in minimap mode
+		config.mapEdgeMargin = 0
+
+		-- Get current rotation to determine if dimensions should be swapped
+		-- When rotation is 90° or 270°, the map appears rotated so width/height swap visually
+		local minimapRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+		render.minimapRotation = minimapRotation
+		render.lastMinimapRotation = minimapRotation
+		
+		-- Check if rotation is near 90° or 270° (within a small tolerance)
+		local rotDeg = math.abs(minimapRotation * 180 / math.pi) % 360
+		local is90or270 = (rotDeg > 80 and rotDeg < 100) or (rotDeg > 260 and rotDeg < 280)
+		
+		-- Calculate map aspect ratio, swapping if rotated 90° or 270°
+		local mapRatio
+		if is90or270 then
+			mapRatio = Game.mapY / Game.mapX  -- Inverted for rotated view
+		else
+			mapRatio = Game.mapX / Game.mapY
+		end
+		
+		local maxHeight = config.minimapModeMaxHeight
+		-- Dynamically determine max width from topbar position (like gui_minimap does)
+		local effectiveMaxWidth = config.minimapModeMaxWidth
+		if WG['topbar'] and WG['topbar'].GetPosition then
+			local topbarArea = WG['topbar'].GetPosition()
+			if topbarArea and topbarArea[1] then
+				local margin = WG.FlowUI and (WG.FlowUI.elementMargin + WG.FlowUI.elementPadding) or 10
+				effectiveMaxWidth = (topbarArea[1] - margin) / render.vsx
+			end
+		end
+		local maxWidth = math.min(maxHeight * mapRatio, effectiveMaxWidth * (render.vsx / render.vsy))
+		if maxWidth >= effectiveMaxWidth * (render.vsx / render.vsy) then
+			maxHeight = maxWidth / mapRatio
+		end
+		
+		local usedWidth = math.floor((maxWidth * render.vsy) + 0.5)
+		local usedHeight = math.floor((maxHeight * render.vsy) + 0.5)
+		
+		-- Position at top-left corner touching the screen edges (no padding offset)
+		render.dim.l = 0
+		render.dim.r = usedWidth
+		render.dim.b = render.vsy - usedHeight
+		render.dim.t = render.vsy
+		
+		-- Calculate zoom so the map texture fully fits the PIP
+		-- Use full dimensions since we're edge-to-edge
+		local contentWidth = usedWidth
+		local contentHeight = usedHeight
+		
+		-- Calculate zoom based on which dimension is the limiting factor
+		-- For rotated maps, the visible dimensions are swapped
+		local fitZoomX, fitZoomZ
+		if is90or270 then
+			-- When rotated 90/270, width constraint applies to Z, height to X
+			fitZoomX = contentHeight / mapInfo.mapSizeX
+			fitZoomZ = contentWidth / mapInfo.mapSizeZ
+		else
+			fitZoomX = contentWidth / mapInfo.mapSizeX
+			fitZoomZ = contentHeight / mapInfo.mapSizeZ
+		end
+		local fitZoom = math.min(fitZoomX, fitZoomZ)  -- Use min to ensure full map is visible at max zoom-out
+
+		-- Set min zoom for current orientation (recalculated on rotation change via ViewResize)
+		minimapModeMinZoom = fitZoom
+		
+		-- Only set camera defaults if not restored from config (i.e., not a luaui reload)
+		if miscState.minimapCameraRestored then
+			-- Restored from config - just ensure zoom isn't below minimum
+			if cameraState.zoom < fitZoom then
+				cameraState.zoom = fitZoom
+				cameraState.targetZoom = fitZoom
+			end
+		else
+			-- Not restored - set to fit full map
+			cameraState.zoom = fitZoom
+			cameraState.targetZoom = fitZoom
+			cameraState.wcx = mapInfo.mapSizeX / 2
+			cameraState.wcz = mapInfo.mapSizeZ / 2
+			cameraState.targetWcx = cameraState.wcx
+			cameraState.targetWcz = cameraState.wcz
+		end
+		
+		-- Force recalculation of world coordinates immediately for minimap mode
+		-- This ensures the first frame renders with correct bounds
+		RecalculateWorldCoordinates()
+		RecalculateGroundTextureCoordinates()
+	else
+		-- Normal PIP mode: scale dimensions with screen size
+		-- Validate that dimensions are reasonable (not at origin/bottom-left which indicates corruption)
+		local minSize = math.floor(config.minPanelSize * render.widgetScale)
+		local dimsValid = render.dim.l and render.dim.r and render.dim.b and render.dim.t and
+		                  oldVsx > 0 and oldVsy > 0 and
+		                  (render.dim.r - render.dim.l) >= minSize and
+		                  (render.dim.t - render.dim.b) >= minSize and
+		                  render.dim.r > minSize and  -- Not stuck at bottom-left
+		                  render.dim.t > minSize
+		
+		if dimsValid then
+			render.dim.l, render.dim.r, render.dim.b, render.dim.t = render.dim.l/oldVsx, render.dim.r/oldVsx, render.dim.b/oldVsy, render.dim.t/oldVsy
+		else
+			-- Initialize with default values positioned in upper-right area of screen
+			Spring.Echo("PIP: Detected invalid dimensions, resetting to default position")
+			render.dim.l = 0.7
+			render.dim.r = 0.7 + (config.minPanelSize * render.widgetScale * 1.4) / render.vsx
+			render.dim.b = 0.7
+			render.dim.t = 0.7 + (config.minPanelSize * render.widgetScale * 1.2) / render.vsy
+			-- Also clear saved dimensions since they may be corrupted too
+			uiState.savedDimensions = {}
+		end
+		render.dim.l, render.dim.r, render.dim.b, render.dim.t = math.floor(render.dim.l*render.vsx), math.floor(render.dim.r*render.vsx), math.floor(render.dim.b*render.vsy), math.floor(render.dim.t*render.vsy)
+		
+		-- Clamp oversized dimensions to max constraints (auto-correct errors from previous sessions)
+		local maxSize = math.floor(render.vsy * config.maxPanelSizeVsy)
+		if render.dim.r - render.dim.l > maxSize then
+			render.dim.r = render.dim.l + maxSize
+		end
+		if render.dim.t - render.dim.b > maxSize then
+			render.dim.b = render.dim.t - maxSize
+		end
+	end
 
 	render.widgetScale = (render.vsy / 2000) * render.uiScale
 	render.usedButtonSize = math.floor(config.buttonSize * render.widgetScale * render.uiScale)
@@ -3929,7 +5702,16 @@ function widget:ViewResize()
 
 	-- If we have saved dimensions, position the minimize button at the window's position
 	-- This ensures consistency between auto-minimize on load and manual minimize
-	if uiState.savedDimensions.l and uiState.savedDimensions.r and uiState.savedDimensions.b and uiState.savedDimensions.t then
+	-- Validate that saved dimensions are reasonable (not corrupted to bottom-left)
+	local minSize = math.floor(config.minPanelSize * render.widgetScale)
+	local savedDimsValid = uiState.savedDimensions.l and uiState.savedDimensions.r and 
+	                       uiState.savedDimensions.b and uiState.savedDimensions.t and
+	                       (uiState.savedDimensions.r - uiState.savedDimensions.l) >= minSize and
+	                       (uiState.savedDimensions.t - uiState.savedDimensions.b) >= minSize and
+	                       uiState.savedDimensions.r > minSize and
+	                       uiState.savedDimensions.t > minSize
+	
+	if savedDimsValid then
 		-- Position based on where the window was (same logic as manual minimize)
 		local sw, sh = Spring.GetWindowGeometry()
 		if uiState.savedDimensions.l < sw * 0.5 then
@@ -3943,7 +5725,14 @@ function widget:ViewResize()
 			uiState.minModeB = uiState.savedDimensions.t - buttonSizeScaled
 		end
 	else
-		-- Fallback to screen edge if no saved dimensions
+		-- Fallback to top-right corner if no valid saved dimensions
+		uiState.minModeL = render.vsx - buttonSizeScaled - screenMarginPx
+		uiState.minModeB = render.vsy - buttonSizeScaled - screenMarginPx
+	end
+	
+	-- Validate minMode position isn't at bottom-left (indicating corruption)
+	if uiState.minModeL < buttonSizeScaled and uiState.minModeB < buttonSizeScaled then
+		-- Corrupted position, reset to top-right corner
 		uiState.minModeL = render.vsx - buttonSizeScaled - screenMarginPx
 		uiState.minModeB = render.vsy - buttonSizeScaled - screenMarginPx
 	end
@@ -3962,30 +5751,54 @@ function widget:ViewResize()
 	-- Clamp camera position to respect margin after view resize
 	local pipWidth = render.dim.r - render.dim.l
 	local pipHeight = render.dim.t - render.dim.b
+	
+	-- Swap dimensions when rotated 90°/270°
+	if render.minimapRotation then
+		local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+		if rotDeg > 45 and rotDeg < 135 then
+			pipWidth, pipHeight = pipHeight, pipWidth
+		end
+	end
+
+	-- Calculate dynamic min zoom so full map is visible at max zoom-out
+	-- Use raw (non-rotated) dimensions and take min(dim)/max(mapSize) so zoom limit is the same regardless of rotation
+	if not isMinimapMode then
+		local rawW = render.dim.r - render.dim.l
+		local rawH = render.dim.t - render.dim.b
+		pipModeMinZoom = math.min(rawW, rawH) / math.max(mapInfo.mapSizeX, mapInfo.mapSizeZ)
+		if cameraState.zoom < pipModeMinZoom then
+			cameraState.zoom = pipModeMinZoom
+			cameraState.targetZoom = pipModeMinZoom
+		end
+	end
+	
 	local visibleWorldWidth = pipWidth / cameraState.zoom
 	local visibleWorldHeight = pipHeight / cameraState.zoom
-	local smallerVisibleDimension = math.min(visibleWorldWidth, visibleWorldHeight)
-	local margin = smallerVisibleDimension * config.mapEdgeMargin
 
-	local minWcx = visibleWorldWidth / 2 - margin
-	local maxWcx = mapInfo.mapSizeX - (visibleWorldWidth / 2 - margin)
-	local minWcz = visibleWorldHeight / 2 - margin
-	local maxWcz = mapInfo.mapSizeZ - (visibleWorldHeight / 2 - margin)
-
-	cameraState.wcx = math.min(math.max(cameraState.wcx, minWcx), maxWcx)
-	cameraState.wcz = math.min(math.max(cameraState.wcz, minWcz), maxWcz)
+	cameraState.wcx = ClampCameraAxis(cameraState.wcx, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+	cameraState.wcz = ClampCameraAxis(cameraState.wcz, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 	cameraState.targetWcx = cameraState.wcx
 	cameraState.targetWcz = cameraState.wcz
 
 	RecalculateWorldCoordinates()
 	RecalculateGroundTextureCoordinates()
 
-	-- Delete and recreate texture on size change
+	-- Delete and recreate textures on size change
 	if pipR2T.contentTex then
 		gl.DeleteTexture(pipR2T.contentTex)
 		pipR2T.contentTex = nil
 	end
+	if pipR2T.unitsTex then
+		gl.DeleteTexture(pipR2T.unitsTex)
+		pipR2T.unitsTex = nil
+	end
+	-- Invalidate content mask cache to force regeneration with correct dimensions
+	pipR2T.contentMaskLastWidth = 0
+	pipR2T.contentMaskLastHeight = 0
+	pipR2T.contentMaskLastL = -1
+	pipR2T.contentMaskLastB = -1
 	pipR2T.contentNeedsUpdate = true
+	pipR2T.unitsNeedsUpdate = true
 
 	-- Update guishader blur dimensions
 	UpdateGuishaderBlur()
@@ -3998,18 +5811,62 @@ function widget:PlayerChanged(playerID)
 	-- Update spec state
 	cameraState.mySpecState = Spring.GetSpectatingState()
 
+	-- Clear ghost buildings when becoming spectator (spectators see everything)
+	if cameraState.mySpecState then
+		for k in pairs(ghostBuildings) do ghostBuildings[k] = nil end
+		for k in pairs(ownBuildingPosX) do ownBuildingPosX[k] = nil end
+		for k in pairs(ownBuildingPosZ) do ownBuildingPosZ[k] = nil end
+	end
+
 	-- Keep tracking even if fullview is disabled - tracking will resume when fullview is re-enabled
 end
 
 function widget:Shutdown()
-	gl.DeleteList(unitOutlineList)
-	gl.DeleteList(radarDotList)
-	DeleteSeismicPingDlists()
+	-- Check if another PIP instance is still running.
+	-- Deleting GL resources (atlas, shaders, VBOs, display lists) while another PIP instance
+	-- is active can corrupt the engine's internal resource tracking, causing "opaque squares"
+	-- for unit icons in the surviving PIP. Defer GPU resource cleanup if another PIP is alive.
+	local anotherPipActive = false
+	for n = 0, 4 do
+		if n ~= pipNumber and WG['pip' .. n] then
+			anotherPipActive = true
+			break
+		end
+	end
 
-	-- Clean up render-to-texture
+	if not anotherPipActive then
+		-- Safe to clean up all GPU resources — we're the last PIP instance
+		DestroyGL4Icons()
+		DestroyGL4Primitives()
+
+		gl.DeleteList(unitOutlineList)
+		gl.DeleteList(radarDotList)
+		DeleteSeismicPingDlists()
+
+		if losShader then
+			gl.DeleteShader(losShader)
+			losShader = nil
+		end
+
+		if waterShader then
+			gl.DeleteShader(waterShader)
+			waterShader = nil
+		end
+	else
+		-- Another PIP is still active — only disable GL4 flag (don't delete GPU resources)
+		-- The orphaned resources will be freed when the last PIP shuts down or the game ends
+		gl4Icons.enabled = false
+		gl4Prim.enabled = false
+	end
+
+	-- R2T textures are per-instance and safe to always delete
 	if pipR2T.contentTex then
 		gl.DeleteTexture(pipR2T.contentTex)
 		pipR2T.contentTex = nil
+	end
+	if pipR2T.unitsTex then
+		gl.DeleteTexture(pipR2T.unitsTex)
+		pipR2T.unitsTex = nil
 	end
 
 	-- Clean up content mask dlist
@@ -4034,21 +5891,20 @@ function widget:Shutdown()
 		pipR2T.losTex = nil
 	end
 
-	-- Clean up LOS shader
-	if losShader then
-		gl.DeleteShader(losShader)
-		losShader = nil
-	end
-
-	if waterShader then
-		gl.DeleteShader(waterShader)
-		waterShader = nil
-	end
-
 	-- Clean up minimize mode display list
 	if render.minModeDlist then
 		gl.DeleteList(render.minModeDlist)
 		render.minModeDlist = nil
+	end
+
+	-- Clean up tracked player overlay display lists
+	if pipR2T.resbarTextDlist then
+		gl.DeleteList(pipR2T.resbarTextDlist)
+		pipR2T.resbarTextDlist = nil
+	end
+	if pipR2T.playerNameDlist then
+		gl.DeleteList(pipR2T.playerNameDlist)
+		pipR2T.playerNameDlist = nil
 	end
 
 	-- Remove guishader blur
@@ -4059,14 +5915,33 @@ function widget:Shutdown()
 			WG['guishader'].RemoveRect('pip'..pipNumber)
 		end
 	end
-	-- Clean up our guishader dlist
+	-- Clean up guishader dlist
 	if render.guishaderDlist then
 		gl.DeleteList(render.guishaderDlist)
 		render.guishaderDlist = nil
 	end
 
-	-- Clean up API
+	-- Restore minimap if we were in minimap mode
+	if isMinimapMode then
+		-- Restore original minimize state
+		if miscState.oldMinimapMinimized == 0 then
+			Spring.SendCommands("minimap minimize 0")
+		end
+		if miscState.oldMinimapGeometry then
+			Spring.SendCommands("minimap geometry " .. miscState.oldMinimapGeometry)
+		end
+		-- Re-enable the gui_minimap widget if it exists
+		if widgetHandler.knownWidgets and widgetHandler.knownWidgets["Minimap"] then
+			widgetHandler:EnableWidget("Minimap")
+		end
+	end
+
+	-- Clean up API (must happen AFTER the anotherPipActive check above)
 	WG['pip'..pipNumber] = nil
+	if isMinimapMode then
+		WG.pip_minimap = nil
+		WG['minimap'] = nil
+	end
 
 	for i = 1, #buttons do
 		local button = buttons[i]
@@ -4078,6 +5953,8 @@ function widget:Shutdown()
 				Spring.SendCommands("unbind Alt+Q pip_copy")
 			elseif button.command == 'pip_switch' then
 				Spring.SendCommands("unbind Shift+Q pip_switch")
+			elseif button.command == 'pip_track' then
+				Spring.SendCommands("unbind Alt+A pip_track")
 			end
 		end
 	end
@@ -4085,6 +5962,9 @@ end
 
 function widget:GetConfigData()
 	CorrectScreenPosition()
+
+	-- Guard against uninitialized render dimensions
+	if not render.dim.l or not render.dim.r or not render.dim.b or not render.dim.t then return {} end
 
 	-- When in min mode, save the expanded dimensions from uiState.savedDimensions
 	local saveL, saveR, saveB, saveT
@@ -4120,12 +6000,23 @@ function widget:GetConfigData()
 		unitpicZoomThreshold=config.unitpicZoomThreshold,
 		gameID = Game.gameID or Spring.GetGameRulesParam("GameID"),
 		worldIconTooltipShownTotal = miscState.worldIconTooltipShownTotal,
+		-- Minimap mode settings
+		minimapModeMaxHeight = config.minimapModeMaxHeight,
+		leftButtonPansCamera = config.leftButtonPansCamera,
+		-- Minimap mode camera state (for luaui reload restoration)
+		minimapModeWcx = isMinimapMode and cameraState.wcx or nil,
+		minimapModeWcz = isMinimapMode and cameraState.wcz or nil,
+		minimapModeZoom = isMinimapMode and cameraState.zoom or nil,
+		-- Ghost building positions persist across luaui reload (same game only)
+		ghostBuildings = ghostBuildings,
 	}
 end
 
 function widget:SetConfigData(data)
-	--Spring.Echo(data)
+	if not data or not data.gameID then return end	-- prevent loading empty/corrupted data
+
 	miscState.hadSavedConfig = (data and next(data) ~= nil) -- Mark that we have saved config data
+	miscState.savedGameID = data and data.gameID -- Store saved gameID for new game detection in Initialize
 
 	-- Validate and sanitize position data to prevent corruption
 	local function isValidNumber(val, min, max)
@@ -4138,24 +6029,35 @@ function widget:SetConfigData(data)
 	-- First restore the expanded dimensions if available and valid
 	if data.pl and data.pr and data.pb and data.pt then
 		-- Validate that the position values are reasonable (between 0 and 1 as normalized coords)
-		if isValidNumber(data.pl, 0, 1) and isValidNumber(data.pr, 0, 1) and
+		if isValidNumber(data.pl, 0, 1) and isValidNumber(data.pr, 0, 1) and 
 		   isValidNumber(data.pb, 0, 1) and isValidNumber(data.pt, 0, 1) and
 		   data.pl < data.pr and data.pb < data.pt then  -- Ensure left < right and bottom < top
-
+			
 			local tempL = math.floor(data.pl*render.vsx)
 			local tempR = math.floor(data.pr*render.vsx)
 			local tempB = math.floor(data.pb*render.vsy)
 			local tempT = math.floor(data.pt*render.vsy)
-
+			
 			-- Additional sanity check: ensure dimensions are within screen bounds
 			local minSize = math.floor(config.minPanelSize * render.widgetScale)
+			local maxSize = math.floor(render.vsy * config.maxPanelSizeVsy)
 			local windowWidth = tempR - tempL
 			local windowHeight = tempT - tempB
-
+			
+			-- Clamp oversized dimensions to max constraints
+			if windowWidth > maxSize then
+				tempR = tempL + maxSize
+				windowWidth = maxSize
+			end
+			if windowHeight > maxSize then
+				tempB = tempT - maxSize
+				windowHeight = maxSize
+			end
+			
 			if windowWidth >= minSize and windowHeight >= minSize and
 			   tempL >= 0 and tempR <= render.vsx and
 			   tempB >= 0 and tempT <= render.vsy then
-
+				
 				uiState.savedDimensions = {
 					l = tempL,
 					r = tempR,
@@ -4203,34 +6105,69 @@ function widget:SetConfigData(data)
 	-- Validate camera coordinates (must be within map bounds)
 	local maxX = mapInfo.mapSizeX
 	local maxZ = mapInfo.mapSizeZ
-
-	if data.wcx and isValidNumber(data.wcx, 0, maxX) then
-		cameraState.wcx = data.wcx
+	
+	if isMinimapMode then
+		-- In minimap mode, only restore camera state on luaui reload (same game)
+		-- At game launch, camera should start centered at minimum zoom
+		if isSameGame then
+			if data.minimapModeWcx and isValidNumber(data.minimapModeWcx, 0, maxX) then
+				cameraState.wcx = data.minimapModeWcx
+			end
+			if data.minimapModeWcz and isValidNumber(data.minimapModeWcz, 0, maxZ) then
+				cameraState.wcz = data.minimapModeWcz
+			end
+			cameraState.targetWcx, cameraState.targetWcz = cameraState.wcx, cameraState.wcz
+			
+			if data.minimapModeZoom and isValidNumber(data.minimapModeZoom, 0, 1) then
+				cameraState.zoom = data.minimapModeZoom
+				cameraState.targetZoom = cameraState.zoom
+				miscState.minimapCameraRestored = true  -- Flag that we restored camera state
+			end
+		end
+		-- If not same game, leave camera at defaults (centered, min zoom) set in Initialize
+	else
+		-- Regular PIP mode - restore camera position
+		if data.wcx and isValidNumber(data.wcx, 0, maxX) then
+			cameraState.wcx = data.wcx
+		end
+		if data.wcz and isValidNumber(data.wcz, 0, maxZ) then
+			cameraState.wcz = data.wcz
+		end
+		cameraState.targetWcx, cameraState.targetWcz = cameraState.wcx, cameraState.wcz  -- Initialize targets from config
+		
+		-- Validate zoom level (must be between 0 and 1)
+		if data.zoom and isValidNumber(data.zoom, 0, 1) then
+			cameraState.zoom = data.zoom
+		end
 	end
-	if data.wcz and isValidNumber(data.wcz, 0, maxZ) then
-		cameraState.wcz = data.wcz
-	end
-	cameraState.targetWcx, cameraState.targetWcz = cameraState.wcx, cameraState.wcz  -- Initialize targets from config
-
-	-- Validate zoom level (must be between 0 and 1)
-	if data.zoom and isValidNumber(data.zoom, 0, 1) then
-		cameraState.zoom = data.zoom
-	end
-
+	
 	uiState.drawingGround = data.drawingGround~= nil and data.drawingGround or uiState.drawingGround
 	config.drawProjectiles = data.drawProjectiles~= nil and data.drawProjectiles or config.drawProjectiles
 	config.trackingSmoothness = data.trackingSmoothness or config.trackingSmoothness
 	config.radarWobbleSpeed = data.radarWobbleSpeed or config.radarWobbleSpeed
 	if data.showUnitpics ~= nil then config.showUnitpics = data.showUnitpics end
 	--if data.unitpicZoomThreshold then config.unitpicZoomThreshold = data.unitpicZoomThreshold end
-
+	
 	-- Restore persistent tooltip counter
 	if data.worldIconTooltipShownTotal and type(data.worldIconTooltipShownTotal) == "number" then
 		miscState.worldIconTooltipShownTotal = data.worldIconTooltipShownTotal
 	end
+	
+	-- Restore minimap mode settings
+	if data.minimapModeMaxHeight and type(data.minimapModeMaxHeight) == "number" and data.minimapModeMaxHeight > 0 and data.minimapModeMaxHeight <= 1 then
+		config.minimapModeMaxHeight = data.minimapModeMaxHeight
+	end
+	if data.leftButtonPansCamera ~= nil then
+		config.leftButtonPansCamera = data.leftButtonPansCamera
+	end
 
 	local currentGameID = Game.gameID and Game.gameID or Spring.GetGameRulesParam("GameID")
 	local isSameGame = (data.gameID and currentGameID and data.gameID == currentGameID)
+
+	-- Restore ghost buildings from saved config (same game only — positions are game-specific)
+	if isSameGame and data.ghostBuildings then
+		ghostBuildings = data.ghostBuildings
+	end
 
 	if Spring.GetGameFrame() > 0 or isSameGame then
 		interactionState.areTracking = data.areTracking
@@ -4361,138 +6298,243 @@ local function DrawCommandQueuesOverlay(cachedSelectedUnits)
 		end
 	else
 		-- Show only selected units (or tracked player's selected units)
-		local selectedUnits
 		if interactionState.trackingPlayerID then
-			-- Get tracked player's selected units
+			-- Get tracked player's selected units — write directly into pool to avoid table alloc
 			local playerSelections = WG['allyselectedunits'] and WG['allyselectedunits'].getPlayerSelectedUnits(interactionState.trackingPlayerID)
 			if playerSelections then
-				-- Convert table to array
-				selectedUnits = {}
 				for unitID, _ in pairs(playerSelections) do
-					selectedUnits[#selectedUnits + 1] = unitID
+					unitCount = unitCount + 1
+					unitsToShow[unitCount] = unitID
 				end
 			end
 		else
 			-- Use cached selected units to avoid redundant API call
-			selectedUnits = cachedSelectedUnits
+			local selectedUnits = cachedSelectedUnits
+			if not selectedUnits then
+				return
+			end
+			local selectedCount = #selectedUnits
+			if selectedCount == 0 then
+				return
+			end
+			for i = 1, selectedCount do
+				unitsToShow[i] = selectedUnits[i]
+			end
+			unitCount = selectedCount
 		end
-
-		if not selectedUnits then
-			return
-		end
-		local selectedCount = #selectedUnits
-		if selectedCount == 0 then
-			return
-		end
-		-- Copy selected units to pool (avoid using external array directly)
-		for i = 1, selectedCount do
-			unitsToShow[i] = selectedUnits[i]
-		end
-		unitCount = selectedCount
 	end
 
 	if unitCount == 0 then
 		return
 	end
 
-	gl.Scissor(render.dim.l, render.dim.b, render.dim.r - render.dim.l, render.dim.t - render.dim.b)
-	glFunc.LineWidth(1.0)
-	gl.LineStipple("springdefault")
+	local resScale = render.contentScale or 1
+	local useGL4Commands = gl4Prim.enabled
+	local maxUnits = Game.maxUnits or 32000  -- Features encoded as featureID + maxUnits
 
-	-- Collect all line segments and markers into batches (massively reduces closure allocations)
-	local linePool = pools.commandLine
-	local markerPool = pools.commandMarker
-	local lineCount = 0
-	local markerCount = 0
-	local maxUnits = Game.maxUnits or 32000	-- Features are encoded as featureID + Game.maxUnits in commands
+	-- ========================================================================
+	-- Waypoint cache: only call GetUnitCommands every CMD_CACHE_INTERVAL frames
+	-- GetUnitCommands allocates ~60 tables per unit per call (outer + cmd + params),
+	-- causing massive GC pressure. We cache the extracted positions/cmdIDs and
+	-- only refresh periodically or when the unit list changes.
+	-- ========================================================================
+	cmdQueueCache.counter = cmdQueueCache.counter + 1
 
-	for i = 1, unitCount do
-		local uID = unitsToShow[i]
-		local ux, uy, uz = spFunc.GetUnitPosition(uID)
-		if ux then
-			local startSX, startSY = WorldToPipCoords(ux, uz)
-			local commands = spFunc.GetUnitCommands(uID, 30)
+	-- Quick hash to detect unit list changes: unitCount + first/last unitIDs
+	local unitHash = unitCount
+	if unitCount > 0 then unitHash = unitHash + unitsToShow[1] end
+	if unitCount > 1 then unitHash = unitHash + unitsToShow[unitCount] end
+	if unitCount > 2 then unitHash = unitHash + unitsToShow[math.floor(unitCount / 2)] end
 
-			if commands then
-				local cmdCount = #commands
-				if cmdCount > 0 then
-					local prevSX, prevSY = startSX, startSY
+	local needRefresh = (cmdQueueCache.counter % CMD_CACHE_INTERVAL == 0)
+		or (unitHash ~= cmdQueueCache.lastUnitHash)
+	cmdQueueCache.lastUnitHash = unitHash
 
-					for j = 1, cmdCount do
+	if needRefresh then
+		local wpCache = cmdQueueCache.waypoints
+		for i = 1, unitCount do
+			local uID = unitsToShow[i]
+			local unitTeam = spFunc.GetUnitTeam(uID)
+			if unitTeam ~= gaiaTeamID then
+				local commands = spFunc.GetUnitCommands(uID, 30)
+				local cached = wpCache[uID]
+				if not cached then
+					cached = { n = 0 }
+					wpCache[uID] = cached
+				end
+				local wpCount = 0
+				if commands then
+					for j = 1, #commands do
 						local cmd = commands[j]
 						local cmdX, cmdZ
 						local params = cmd.params
 						if params then
 							local paramCount = #params
 							if paramCount == 3 or cmd.id == 10 then
-								-- Regular positional command (move, attack-ground, etc.)
 								cmdX, cmdZ = params[1], params[3]
 							elseif paramCount == 4 then
-								-- Area commands (reclaim, repair, etc.) have 4 params: {x, y, z, radius}
 								cmdX, cmdZ = params[1], params[3]
 							elseif paramCount == 5 then
-								-- 5 params could be: {targetID, x, y, z, radius} for set-target area commands
 								if params[1] > 0 and params[1] < 1000000 then
-									-- It's a target ID command
-									local targetID = params[1]
-									local tx, ty, tz = spFunc.GetUnitPosition(targetID)
-									if tx then
-										cmdX, cmdZ = tx, tz
-									end
+									local tx, _, tz = spFunc.GetUnitPosition(params[1])
+									if tx then cmdX, cmdZ = tx, tz end
 								else
-									-- Treat as positional
 									cmdX, cmdZ = params[2], params[4]
 								end
 							elseif paramCount == 1 then
 								local targetID = params[1]
-								local tx, ty, tz
-								if targetID >= maxUnits then	-- Features are encoded as featureID + Game.maxUnits in commands
-									tx, ty, tz = spFunc.GetFeaturePosition(targetID - maxUnits)
+								local tx, _, tz
+								if targetID >= maxUnits then
+									tx, _, tz = spFunc.GetFeaturePosition(targetID - maxUnits)
 								else
-									tx, ty, tz = spFunc.GetUnitPosition(targetID)
+									tx, _, tz = spFunc.GetUnitPosition(targetID)
 								end
-								if tx then
-									cmdX, cmdZ = tx, tz
-								end
+								if tx then cmdX, cmdZ = tx, tz end
 							end
 						end
 						if cmdX and cmdZ then
-							local cmdSX, cmdSY = WorldToPipCoords(cmdX, cmdZ)
-
-							-- Use cmdColors table
-							local color = cmdColors[cmd.id] or cmdColors.unknown
-							local r, g, b = color[1], color[2], color[3]
-
-							-- Add line segment to batch
-							lineCount = lineCount + 1
-							local lineData = linePool[lineCount]
-							if not lineData then
-								lineData = {}
-								linePool[lineCount] = lineData
+							wpCount = wpCount + 1
+							local wp = cached[wpCount]
+							if not wp then
+								wp = { 0, 0, 0 }  -- {worldX, worldZ, cmdID}
+								cached[wpCount] = wp
 							end
-							lineData.x1, lineData.y1 = prevSX, prevSY
-							lineData.x2, lineData.y2 = cmdSX, cmdSY
-							lineData.r, lineData.g, lineData.b = r, g, b
-
-							-- Add marker to batch
-							markerCount = markerCount + 1
-							local markerData = markerPool[markerCount]
-							if not markerData then
-								markerData = {}
-								markerPool[markerCount] = markerData
-							end
-							markerData.x, markerData.y = cmdSX, cmdSY
-							markerData.r, markerData.g, markerData.b = r, g, b
-
-							prevSX, prevSY = cmdSX, cmdSY
+							wp[1], wp[2], wp[3] = cmdX, cmdZ, cmd.id
 						end
 					end
+				end
+				cached.n = wpCount
+			else
+				-- Gaia unit — clear any stale cache
+				local cached = wpCache[uID]
+				if cached then cached.n = 0 end
+			end
+		end
+	end
+
+	-- ========================================================================
+	-- GL4 rendering path
+	-- ========================================================================
+	if useGL4Commands then
+		gl4Prim.normLines.count = 0
+		gl4Prim.circles.count = 0
+
+		local markerWorldRadius = 3 / cameraState.zoom
+		if markerWorldRadius < 4 then markerWorldRadius = 4
+		elseif markerWorldRadius > 60 then markerWorldRadius = 60 end
+
+		local wpCache = cmdQueueCache.waypoints
+		for i = 1, unitCount do
+			local uID = unitsToShow[i]
+			local cached = wpCache[uID]
+			if cached and cached.n > 0 then
+				local ux, _, uz = spFunc.GetUnitPosition(uID)
+				if ux then
+					local prevWX, prevWZ = ux, uz
+					for j = 1, cached.n do
+						local wp = cached[j]
+						local cmdX, cmdZ, cmdID = wp[1], wp[2], wp[3]
+						local color = cmdColors[cmdID] or cmdColors.unknown
+						local r, g, b = color[1], color[2], color[3]
+
+						GL4AddNormLine(prevWX, prevWZ, cmdX, cmdZ,
+							r, g, b, 0.8, r, g, b, 0.8)
+						GL4AddCircle(cmdX, cmdZ, markerWorldRadius, 0.8,
+							r, g, b, r, g, b, 0.8, 0)
+
+						prevWX, prevWZ = cmdX, cmdZ
+					end
+				end
+			end
+		end
+
+		-- Clear leftover entries in pools
+		for i = unitCount + 1, #unitsToShow do
+			unitsToShow[i] = nil
+		end
+
+		-- Flush via GL4 shaders
+		if gl4Prim.normLines.count > 0 or gl4Prim.circles.count > 0 then
+			gl.Scissor(render.dim.l, render.dim.b, render.dim.r - render.dim.l, render.dim.t - render.dim.b)
+			gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+			gl.DepthTest(false)
+
+			if gl4Prim.circles.count > 0 then
+				local c = gl4Prim.circles
+				c.vbo:Upload(c.data, nil, 0, 1, c.count * GL4_CIRCLE_STEP)
+				GL4SetPrimUniforms(c.shader, c.uniformLocs)
+				c.vao:DrawArrays(GL.POINTS, c.count)
+				gl.UseShader(0)
+			end
+
+			if gl4Prim.normLines.count > 0 then
+				GL4SetPrimUniforms(gl4Prim.lineShader, gl4Prim.lineUniformLocs)
+				local ln = gl4Prim.normLines
+				ln.vbo:Upload(ln.data, nil, 0, 1, ln.count * GL4_LINE_STEP)
+				glFunc.LineWidth(1.0 * resScale)
+				ln.vao:DrawArrays(GL.LINES, ln.count)
+				glFunc.LineWidth(1.0)
+				gl.UseShader(0)
+			end
+
+			gl.Scissor(false)
+		end
+
+		return
+	end
+
+	-- ========================================================================
+	-- Legacy rendering path (BeginEnd)
+	-- ========================================================================
+	gl.Scissor(render.dim.l, render.dim.b, render.dim.r - render.dim.l, render.dim.t - render.dim.b)
+	glFunc.LineWidth(1.0 * resScale)
+	gl.LineStipple("springdefault")
+
+	local linePool = pools.commandLine
+	local markerPool = pools.commandMarker
+	local lineCount = 0
+	local markerCount = 0
+
+	local wpCache = cmdQueueCache.waypoints
+	for i = 1, unitCount do
+		local uID = unitsToShow[i]
+		local cached = wpCache[uID]
+		if cached and cached.n > 0 then
+			local ux, _, uz = spFunc.GetUnitPosition(uID)
+			if ux then
+				local prevSX, prevSY = WorldToPipCoords(ux, uz)
+				for j = 1, cached.n do
+					local wp = cached[j]
+					local cmdSX, cmdSY = WorldToPipCoords(wp[1], wp[2])
+					local color = cmdColors[wp[3]] or cmdColors.unknown
+					local r, g, b = color[1], color[2], color[3]
+
+					lineCount = lineCount + 1
+					local lineData = linePool[lineCount]
+					if not lineData then
+						lineData = {}
+						linePool[lineCount] = lineData
+					end
+					lineData.x1, lineData.y1 = prevSX, prevSY
+					lineData.x2, lineData.y2 = cmdSX, cmdSY
+					lineData.r, lineData.g, lineData.b = r, g, b
+
+					markerCount = markerCount + 1
+					local markerData = markerPool[markerCount]
+					if not markerData then
+						markerData = {}
+						markerPool[markerCount] = markerData
+					end
+					markerData.x, markerData.y = cmdSX, cmdSY
+					markerData.r, markerData.g, markerData.b = r, g, b
+
+					prevSX, prevSY = cmdSX, cmdSY
 				end
 			end
 		end
 	end
 
-	-- Draw all lines in ONE gl.BeginEnd call (massive performance improvement)
+	-- Draw all lines in ONE gl.BeginEnd call
 	if lineCount > 0 then
 		glFunc.BeginEnd(GL.LINES, function()
 			for i = 1, lineCount do
@@ -4506,15 +6548,16 @@ local function DrawCommandQueuesOverlay(cachedSelectedUnits)
 
 	-- Draw all markers in ONE gl.BeginEnd call
 	if markerCount > 0 then
+		local markerSize = 3 * resScale
 		glFunc.BeginEnd(GL.QUADS, function()
 			for i = 1, markerCount do
 				local marker = markerPool[i]
 				glFunc.Color(marker.r, marker.g, marker.b, 0.8)
 				local x, y = marker.x, marker.y
-				glFunc.Vertex(x - 3, y - 3)
-				glFunc.Vertex(x + 3, y - 3)
-				glFunc.Vertex(x + 3, y + 3)
-				glFunc.Vertex(x - 3, y + 3)
+				glFunc.Vertex(x - markerSize, y - markerSize)
+				glFunc.Vertex(x + markerSize, y - markerSize)
+				glFunc.Vertex(x + markerSize, y + markerSize)
+				glFunc.Vertex(x - markerSize, y + markerSize)
 			end
 		end)
 	end
@@ -4536,6 +6579,11 @@ local function DrawBuildPreview(mx, my, iconRadiusZoomDistMult)
 	end
 
 	local _, activeCmdID = Spring.GetActiveCommand()
+
+	-- Exit early if no active command
+	if not activeCmdID then
+		return
+	end
 
 	-- Handle Area Mex command preview
 	if activeCmdID == CMD_AREA_MEX then
@@ -4559,6 +6607,7 @@ local function DrawBuildPreview(mx, my, iconRadiusZoomDistMult)
 				end
 			end)
 			glFunc.LineWidth(1)
+			glFunc.Color(1, 1, 1, 1)
 
 			-- Draw preview icons for all spots in area
 			local mexBuildings = WG["resource_spot_builder"] and WG["resource_spot_builder"].GetMexBuildings()
@@ -4645,7 +6694,7 @@ local function DrawBuildPreview(mx, my, iconRadiusZoomDistMult)
 							break
 						end
 					end
-				end
+				end				
 				if blockedByMobile then
 					glFunc.Color(1, 1, 1, 0.5)
 				else
@@ -4825,16 +6874,281 @@ local function DrawQueuedBuilds(iconRadiusZoomDistMult, cachedSelectedUnits)
 	glFunc.Texture(false)
 end
 
--- Helper function to draw icons (when zoomed out)
+----------------------------------------------------------------------------------------------------
+-- GL4 Instanced Icon Drawing
+----------------------------------------------------------------------------------------------------
+-- Replaces the DrawUnit loop + DrawIcons function with a single GPU instanced draw call.
+-- Instead of per-unit Lua→C API calls and per-icon texture switches, all icons are packed
+-- into a VBO and drawn with a single DrawArrays call through a texture atlas.
+local function GL4DrawIcons(checkAllyTeamID, selectedSet)
+	-- Engine-matching icon size (MiniMap.cpp lines 518-526):
+	-- Engine dpr = unitBaseSize * (ppe^2 * mapX * mapZ / 40000)^0.25 where ppe = pixels/elmo = zoom.
+	-- Simplifies to: unitBaseSize * (mapX*mapZ/40000)^0.25 * sqrt(zoom).
+	-- Independent of PIP pixel dimensions (aspect ratio doesn't affect icon size).
+	local resScale = render.contentScale or 1
+	local unitBaseSize = Spring.GetConfigFloat("MinimapIconScale", 3.5)
+	local iconRadiusZoomDistMult = unitBaseSize * (mapInfo.mapSizeX * mapInfo.mapSizeZ / 40000) ^ 0.25 * math.sqrt(cameraState.zoom) * resScale
+
+	-- Write directly into pre-allocated flat array (zero per-frame allocations)
+	local data = gl4Icons.instanceData
+	local unitCount = #miscState.pipUnits
+	local unitDefCacheTbl = gl4Icons.unitDefCache
+	local unitTeamCacheTbl = gl4Icons.unitTeamCache
+	local unitDefLayerTbl = gl4Icons.unitDefLayer
+	local atlasUVs = gl4Icons.atlasUVs
+	local defaultUV = gl4Icons.defaultUV
+	local cacheUnitIcon = cache.unitIcon
+	local cacheIsBuilding = cache.isBuilding
+	local crashingUnits = miscState.crashingUnits
+	local localTeamAllyTeamCache = teamAllyTeamCache
+	local localTeamColors = teamColors
+	local localBuildPosX = ownBuildingPosX
+	local localBuildPosZ = ownBuildingPosZ
+	local usedElements = 0
+	local maxInst = gl4Icons.maxInstances
+	local pipUnits = miscState.pipUnits
+
+	-- LOS bitmask constants (raw mode avoids table allocation per GetUnitLosState call)
+	local LOS_INLOS = 1
+	local LOS_INRADAR = 2
+	local LOS_PREVLOS = 4
+	local LOS_CONTRADAR = 8
+
+	-- Compute takeable teams (leaderless, alive, non-AI)  refreshed every frame
+	local takeableTeams = {}
+	for _, tID in ipairs(Spring.GetTeamList()) do
+		local _, leader, isDead, hasAI = Spring.GetTeamInfo(tID, false)
+		if leader == -1 and not isDead and not hasAI then
+			takeableTeams[tID] = true
+		end
+	end
+
+
+	-- Process one unit: resolve LOS, look up icon, write to VBO array.
+	-- Returns updated usedElements. Defined once to avoid closure per-layer.
+	-- (inlined via local function for LuaJIT trace compilation)
+	local function processUnit(uID, usedEl)
+		if crashingUnits[uID] then return usedEl end
+		if usedEl >= maxInst then return usedEl end
+
+		-- Lazy-cache unitDefID
+		local uDefID = unitDefCacheTbl[uID]
+		if not uDefID then
+			uDefID = spFunc.GetUnitDefID(uID)
+			unitDefCacheTbl[uID] = uDefID
+		end
+
+		-- Lazy-cache team
+		local uTeam = unitTeamCacheTbl[uID]
+		if not uTeam then
+			uTeam = spFunc.GetUnitTeam(uID)
+			unitTeamCacheTbl[uID] = uTeam
+		end
+
+		-- Get world position (cached for non-transportable buildings since they don't move)
+		local ux, uz
+		local cachedX = localBuildPosX[uID]
+		if cachedX then
+			ux = cachedX
+			uz = localBuildPosZ[uID]
+		else
+			local x, _, z = spFunc.GetUnitBasePosition(uID)
+			if not x then return usedEl end
+			ux, uz = x, z
+			if uDefID and cacheIsBuilding[uDefID] and cache.cantBeTransported[uDefID] then
+				localBuildPosX[uID] = ux
+				localBuildPosZ[uID] = uz
+			end
+		end
+
+		-- LOS filtering for enemy units
+		local isRadar = false
+		local visibleDefID = uDefID
+		if checkAllyTeamID and uTeam then
+			local unitAllyTeam = localTeamAllyTeamCache[uTeam]
+			if not unitAllyTeam then
+				unitAllyTeam = Spring.GetTeamAllyTeamID(uTeam)
+				localTeamAllyTeamCache[uTeam] = unitAllyTeam
+			end
+			if unitAllyTeam ~= checkAllyTeamID then
+				local losBits = spFunc.GetUnitLosState(uID, checkAllyTeamID, true)
+				if not losBits or losBits == 0 then
+					return usedEl
+				elseif losBits % (LOS_INLOS * 2) >= LOS_INLOS then
+					-- full LOS, draw normally
+				elseif losBits % (LOS_INRADAR * 2) >= LOS_INRADAR then
+					isRadar = true
+					local typed = (losBits % (LOS_PREVLOS * 2) >= LOS_PREVLOS) or (losBits % (LOS_CONTRADAR * 2) >= LOS_CONTRADAR)
+					if not (typed and uDefID) then
+						visibleDefID = nil
+					end
+				else
+					return usedEl
+				end
+			end
+		end
+
+		if not visibleDefID and not isRadar then return usedEl end
+
+		-- Look up atlas UV and size scale
+		local uvs, sizeScale
+		if visibleDefID and cacheUnitIcon[visibleDefID] then
+			local iconData = cacheUnitIcon[visibleDefID]
+			uvs = atlasUVs[iconData.bitmap] or defaultUV
+			sizeScale = iconData.size
+		else
+			uvs = defaultUV
+			sizeScale = 0.5
+		end
+
+		-- Team color (white if selected)
+		local r, g, b
+		if selectedSet and selectedSet[uID] then
+			r, g, b = 1, 1, 1
+		else
+			local color = localTeamColors[uTeam]
+			if color then
+				r, g, b = color[1], color[2], color[3]
+			else
+				r, g, b = 1, 1, 1
+			end
+		end
+
+		-- Stun detection (EMP/paralyze, not build-in-progress)
+		local isStunned = false
+		if not isRadar then
+			local stun, _, buildStun = Spring.GetUnitIsStunned(uID)
+			if stun and not buildStun then isStunned = true end
+		end
+
+		-- Write 12 floats directly into pre-allocated array
+		local off = usedEl * GL4_INSTANCE_STEP
+		data[off+1] = ux; data[off+2] = uz; data[off+3] = sizeScale; data[off+4] = (isRadar and 1 or 0) + (takeableTeams[uTeam] and 2 or 0) + (isStunned and 4 or 0)
+		data[off+5] = uvs[1]; data[off+6] = uvs[2]; data[off+7] = uvs[3]; data[off+8] = uvs[4]
+		data[off+9] = r; data[off+10] = g; data[off+11] = b; data[off+12] = (uID * 0.37) % 6.2832
+		return usedEl + 1
+	end
+
+	-- Ghost building pass: enemy buildings previously seen but no longer in LOS
+	-- Rendered first (lowest VBO indices) so live icons overdraw them correctly
+	-- Zero per-frame API calls — all data is cached from UnitEnteredLos
+	if checkAllyTeamID then
+		-- Build set of currently-visible units to skip ghosts that are live
+		local pipUnitSet = {}
+		for i = 1, unitCount do
+			pipUnitSet[pipUnits[i]] = true
+		end
+
+		local viewL = render.world.l - 220
+		local viewR = render.world.r + 220
+		local viewT = render.world.t - 220
+		local viewB = render.world.b + 220
+
+		for gID, ghost in pairs(ghostBuildings) do
+			if usedElements >= maxInst then break end
+			if not pipUnitSet[gID] then
+				-- If ghost position is currently in LOS but the unit is gone, remove the ghost
+				local gy = spFunc.GetGroundHeight(ghost.x, ghost.z)
+				if spFunc.IsPosInLos(ghost.x, gy, ghost.z, checkAllyTeamID) then
+					ghostBuildings[gID] = nil
+				else
+					if ghost.x >= viewL and ghost.x <= viewR and ghost.z >= viewT and ghost.z <= viewB then
+						local uvs, sizeScale
+						if cacheUnitIcon[ghost.defID] then
+							local iconData = cacheUnitIcon[ghost.defID]
+							uvs = atlasUVs[iconData.bitmap] or defaultUV
+							sizeScale = iconData.size
+						else
+							uvs = defaultUV
+							sizeScale = 0.5
+						end
+						local color = localTeamColors[ghost.teamID]
+						-- Dim ghost icons to simulate being under FoW overlay (engine draws them below LOS layer)
+						local dim = 0.6
+						local r, g, b = (color and color[1] or 1) * dim, (color and color[2] or 1) * dim, (color and color[3] or 1) * dim
+						local off = usedElements * GL4_INSTANCE_STEP
+						data[off+1] = ghost.x; data[off+2] = ghost.z; data[off+3] = sizeScale; data[off+4] = (takeableTeams[ghost.teamID] and 2 or 0)
+						data[off+5] = uvs[1]; data[off+6] = uvs[2]; data[off+7] = uvs[3]; data[off+8] = uvs[4]
+						data[off+9] = r; data[off+10] = g; data[off+11] = b; data[off+12] = (gID * 0.37) % 6.2832
+						usedElements = usedElements + 1
+					end
+				end
+			end
+		end
+	end
+
+	-- 4-pass layer ordering: structures (bottom) → ground → commanders → air (top)
+	-- Each pass iterates the unit list but only processes units matching the current layer.
+	-- The 3 skipped passes per unit cost ~1ns each (cache lookup + branch), which is
+	-- negligible vs the ~100ns API calls in the matching pass.
+	for layer = GL4_LAYER_STRUCTURE, GL4_LAYER_AIR do
+		for i = 1, unitCount do
+			local uID = pipUnits[i]
+			local uDefID = unitDefCacheTbl[uID] or spFunc.GetUnitDefID(uID)
+			if not unitDefCacheTbl[uID] then unitDefCacheTbl[uID] = uDefID end
+			local unitLayer = unitDefLayerTbl[uDefID] or GL4_LAYER_GROUND
+			if unitLayer == layer then
+				usedElements = processUnit(uID, usedElements)
+				if usedElements >= maxInst then break end
+			end
+		end
+	end
+
+	-- Skip draw if no icons
+	if usedElements == 0 then
+		return iconRadiusZoomDistMult
+	end
+
+	-- Single bulk upload to GPU (only the used portion)
+	gl4Icons.vbo:Upload(data, nil, 0, 1, usedElements * GL4_INSTANCE_STEP)
+
+	-- Set up GL state for icon drawing
+	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+
+	-- Activate shader and set uniforms
+	gl.UseShader(gl4Icons.shader)
+	local ul = gl4Icons.uniformLocs
+	gl.UniformFloat(ul.wtp_scale, worldToPipScaleX, worldToPipScaleZ)
+	gl.UniformFloat(ul.wtp_offset, worldToPipOffsetX, worldToPipOffsetZ)
+
+	-- FBO dimensions for NDC conversion
+	local fboW = render.dim.r - render.dim.l
+	local fboH = render.dim.t - render.dim.b
+	gl.UniformFloat(ul.ndcScale, 2.0 / fboW, 2.0 / fboH)
+
+	-- Map rotation
+	local rot = render.minimapRotation or 0
+	gl.UniformFloat(ul.rotSC, math.sin(rot), math.cos(rot))
+	gl.UniformFloat(ul.rotCenter, fboW * 0.5, fboH * 0.5)
+
+	-- Icon size and time
+	gl.UniformFloat(ul.iconBaseSize, iconRadiusZoomDistMult)
+	gl.UniformFloat(ul.gameTime, gameTime)
+	gl.UniformFloat(ul.wallClockTime, wallClockTime)
+
+	-- Bind atlas texture and draw
+	glFunc.Texture(0, gl4Icons.atlas)
+	gl4Icons.vao:DrawArrays(GL.POINTS, usedElements)
+	glFunc.Texture(0, false)
+
+	gl.UseShader(0)
+
+	return iconRadiusZoomDistMult
+end
+
+-- Helper function to draw icons
 local function DrawIcons()
-	-- Batch icon drawing by texture to minimize state changes
-	local distMult = math.min(math.max(1, 2.2-(cameraState.zoom*3.3)), 3)
-	local iconRadiusZoom = config.iconRadius * cameraState.zoom
-	local iconRadiusZoomDistMult = iconRadiusZoom * distMult
+	-- Engine-matching icon size (MiniMap.cpp lines 518-526):
+	-- Engine dpr = unitBaseSize * (ppe^2 * mapX * mapZ / 40000)^0.25 where ppe = pixels/elmo = zoom.
+	-- Simplifies to: unitBaseSize * (mapX*mapZ/40000)^0.25 * sqrt(zoom).
+	-- Independent of PIP pixel dimensions (aspect ratio doesn't affect icon size).
+	local resScale = render.contentScale or 1
+	local unitBaseSize = Spring.GetConfigFloat("MinimapIconScale", 3.5)
+	local iconRadiusZoomDistMult = unitBaseSize * (mapInfo.mapSizeX * mapInfo.mapSizeZ / 40000) ^ 0.25 * math.sqrt(cameraState.zoom) * resScale
 
 	-- Check if we should use unitpics instead of icons
 	local useUnitpics = config.showUnitpics and cameraState.zoom >= config.unitpicZoomThreshold
-
+	
 	-- Texture coordinate inset to prevent edge bleeding
 	local texInset = 0.004
 
@@ -4842,9 +7156,10 @@ local function DrawIcons()
 	local iconsByTexture = pools.iconsByTexture
 	local unitpicsByTexture = pools.unitpicsByTexture
 	local defaultIconIndices = pools.defaultIconIndices
+	local textureSizes = pools.textureSizes
+	local unitpicSizes = pools.unitpicSizes
 
-	-- Clear pool tables from previous frame and track sizes
-	local textureSizes = {}
+	-- Clear pool tables from previous frame and reset sizes
 	for k in pairs(iconsByTexture) do
 		local t = iconsByTexture[k]
 		for i = #t, 1, -1 do
@@ -4853,7 +7168,6 @@ local function DrawIcons()
 		textureSizes[k] = 0
 	end
 	-- Clear unitpic pool tables
-	local unitpicSizes = {}
 	for k in pairs(unitpicsByTexture) do
 		local t = unitpicsByTexture[k]
 		for i = #t, 1, -1 do
@@ -4861,47 +7175,215 @@ local function DrawIcons()
 		end
 		unitpicSizes[k] = 0
 	end
+	local defaultStructureCount = 0
 	local defaultCount = 0
+	local defaultCommanderCount = 0
+	local defaultElevatedCount = 0
 
-	local iconCount = #drawData.iconTeam
+	-- Cache for key lookups to avoid string concatenation per-icon
+	local elevatedKeyCache = pools.elevatedKeyCache
+	local commanderKeyCache = pools.commanderKeyCache
+	local structureKeyCache = pools.structureKeyCache
+	local iconCount = drawData.iconCount
+	local iconUdef = drawData.iconUdef
+	local cacheCanFly = cache.canFly
+	local cacheIsBuilding = cache.isBuilding
+	local cacheIsCommander = cache.isCommander
+	local cacheUnitIcon = cache.unitIcon
+	local cacheUnitPic = cache.unitPic
+	
 	for i = 1, iconCount do
-		local udef = drawData.iconUdef[i]
-		if udef and cache.unitIcon[udef] then
-			local bitmap = cache.unitIcon[udef].bitmap
-			local texGroup = iconsByTexture[bitmap]
-			local groupSize = textureSizes[bitmap]
+		local udef = iconUdef[i]
+		-- Aircraft are always drawn on top (use unitdef, not current Y position)
+		local isElevated = udef and cacheCanFly[udef]
+		-- Commanders drawn above ground units but below air
+		local isCommander = not isElevated and udef and cacheIsCommander[udef]
+		-- Structures drawn below mobile ground units
+		local isStructure = not isElevated and not isCommander and udef and cacheIsBuilding[udef]
+		
+		if udef and cacheUnitIcon[udef] then
+			local bitmap = cacheUnitIcon[udef].bitmap
+			-- Use separate texture groups for structure, ground, commander, and elevated units
+			-- Use cached key to avoid string concatenation
+			local groupKey
+			if isElevated then
+				groupKey = elevatedKeyCache[bitmap]
+				if not groupKey then
+					groupKey = bitmap .. "_elevated"
+					elevatedKeyCache[bitmap] = groupKey
+				end
+			elseif isCommander then
+				groupKey = commanderKeyCache[bitmap]
+				if not groupKey then
+					groupKey = bitmap .. "_commander"
+					commanderKeyCache[bitmap] = groupKey
+				end
+			elseif isStructure then
+				groupKey = structureKeyCache[bitmap]
+				if not groupKey then
+					groupKey = bitmap .. "_structure"
+					structureKeyCache[bitmap] = groupKey
+				end
+			else
+				groupKey = bitmap
+			end
+			local texGroup = iconsByTexture[groupKey]
+			local groupSize = textureSizes[groupKey]
 			if not texGroup then
 				texGroup = {}
 				groupSize = 0
-				iconsByTexture[bitmap] = texGroup
+				iconsByTexture[groupKey] = texGroup
 			end
 			groupSize = groupSize + 1
-			textureSizes[bitmap] = groupSize
+			textureSizes[groupKey] = groupSize
 			texGroup[groupSize] = i
-
+			
 			-- Also group by unitpic if we're using unitpics
-			if useUnitpics and cache.unitPic[udef] then
-				local unitpic = cache.unitPic[udef]
-				local picGroup = unitpicsByTexture[unitpic]
-				local picGroupSize = unitpicSizes[unitpic]
+			if useUnitpics then
+				local unitpic = cacheUnitPic[udef]
+				local picGroupKey
+				if isElevated then
+					picGroupKey = elevatedKeyCache[unitpic]
+					if not picGroupKey then
+						picGroupKey = unitpic .. "_elevated"
+						elevatedKeyCache[unitpic] = picGroupKey
+					end
+				elseif isCommander then
+					picGroupKey = commanderKeyCache[unitpic]
+					if not picGroupKey then
+						picGroupKey = unitpic .. "_commander"
+						commanderKeyCache[unitpic] = picGroupKey
+					end
+				elseif isStructure then
+					picGroupKey = structureKeyCache[unitpic]
+					if not picGroupKey then
+						picGroupKey = unitpic .. "_structure"
+						structureKeyCache[unitpic] = picGroupKey
+					end
+				else
+					picGroupKey = unitpic
+				end
+				local picGroup = unitpicsByTexture[picGroupKey]
+				local picGroupSize = unitpicSizes[picGroupKey]
 				if not picGroup then
 					picGroup = {}
 					picGroupSize = 0
-					unitpicsByTexture[unitpic] = picGroup
+					unitpicsByTexture[picGroupKey] = picGroup
 				end
 				picGroupSize = picGroupSize + 1
-				unitpicSizes[unitpic] = picGroupSize
+				unitpicSizes[picGroupKey] = picGroupSize
 				picGroup[picGroupSize] = i
 			end
 		else
-			defaultCount = defaultCount + 1
-			defaultIconIndices[defaultCount] = i
+			if isElevated then
+				defaultElevatedCount = defaultElevatedCount + 1
+				defaultIconIndices[iconCount * 3 + defaultElevatedCount] = i
+			elseif isCommander then
+				defaultCommanderCount = defaultCommanderCount + 1
+				defaultIconIndices[iconCount * 2 + defaultCommanderCount] = i
+			elseif isStructure then
+				defaultStructureCount = defaultStructureCount + 1
+				defaultIconIndices[defaultStructureCount] = i
+			else
+				defaultCount = defaultCount + 1
+				defaultIconIndices[iconCount + defaultCount] = i
+			end
 		end
 	end
 
-	-- Clear leftover default indices
-	for i = defaultCount + 1, #defaultIconIndices do
+	-- Clear leftover default indices in each tier's region
+	for i = defaultStructureCount + 1, iconCount do
 		defaultIconIndices[i] = nil
+	end
+	for i = iconCount + defaultCount + 1, iconCount * 2 do
+		defaultIconIndices[i] = nil
+	end
+	for i = iconCount * 2 + defaultCommanderCount + 1, iconCount * 3 do
+		defaultIconIndices[i] = nil
+	end
+	for i = iconCount * 3 + defaultElevatedCount + 1, #defaultIconIndices do
+		defaultIconIndices[i] = nil
+	end
+	-- Sort each texture group by cost (ascending = cheap first, expensive on top)
+	-- Then Y position, then unit ID as tiebreaker for stable sorting
+	local iconY = drawData.iconY
+	local iconUnitID = drawData.iconUnitID
+	-- Build per-icon cost lookup from unitdef cache (avoids table creation per frame)
+	local iconCost = pools.iconCost
+	for i = 1, iconCount do
+		local udef = iconUdef[i]
+		iconCost[i] = udef and cache.unitCost[udef] or 0
+	end
+	-- Set upvalues for shared comparator (avoids closure allocation per sort call)
+	sortIconY = iconY
+	sortIconUnitID = iconUnitID
+	sortIconCost = iconCost
+	for _, indices in pairs(iconsByTexture) do
+		if #indices > 1 then
+			table.sort(indices, iconSortComparator)
+		end
+	end
+	-- Sort unitpic groups as well
+	for _, indices in pairs(unitpicsByTexture) do
+		if #indices > 1 then
+			table.sort(indices, iconSortComparator)
+		end
+	end
+	-- Sort default structure icons (indices 1 to defaultStructureCount)
+	if defaultStructureCount > 1 then
+		local structureDefaults = pools.structureDefaults
+		for i = 1, defaultStructureCount do
+			structureDefaults[i] = defaultIconIndices[i]
+		end
+		for i = defaultStructureCount + 1, #structureDefaults do
+			structureDefaults[i] = nil
+		end
+		table.sort(structureDefaults, iconSortComparator)
+		for i = 1, defaultStructureCount do
+			defaultIconIndices[i] = structureDefaults[i]
+		end
+	end
+	-- Sort default ground mobile icons (indices iconCount+1 to iconCount+defaultCount)
+	if defaultCount > 1 then
+		local groundDefaults = pools.groundDefaults
+		for i = 1, defaultCount do
+			groundDefaults[i] = defaultIconIndices[iconCount + i]
+		end
+		for i = defaultCount + 1, #groundDefaults do
+			groundDefaults[i] = nil
+		end
+		table.sort(groundDefaults, iconSortComparator)
+		for i = 1, defaultCount do
+			defaultIconIndices[iconCount + i] = groundDefaults[i]
+		end
+	end
+	-- Sort default commander icons (indices iconCount*2+1 to iconCount*2+defaultCommanderCount)
+	if defaultCommanderCount > 1 then
+		local commanderDefaults = pools.commanderDefaults
+		for i = 1, defaultCommanderCount do
+			commanderDefaults[i] = defaultIconIndices[iconCount * 2 + i]
+		end
+		for i = defaultCommanderCount + 1, #commanderDefaults do
+			commanderDefaults[i] = nil
+		end
+		table.sort(commanderDefaults, iconSortComparator)
+		for i = 1, defaultCommanderCount do
+			defaultIconIndices[iconCount * 2 + i] = commanderDefaults[i]
+		end
+	end
+	-- Sort default elevated icons (indices iconCount*3+1 to iconCount*3+defaultElevatedCount)
+	if defaultElevatedCount > 1 then
+		local elevatedDefaults = pools.elevatedDefaults
+		for i = 1, defaultElevatedCount do
+			elevatedDefaults[i] = defaultIconIndices[iconCount * 3 + i]
+		end
+		for i = defaultElevatedCount + 1, #elevatedDefaults do
+			elevatedDefaults[i] = nil
+		end
+		table.sort(elevatedDefaults, iconSortComparator)
+		for i = 1, defaultElevatedCount do
+			defaultIconIndices[iconCount * 3 + i] = elevatedDefaults[i]
+		end
 	end
 
 	-- Draw unitpics when zoomed in enough (before icons so icons layer on top if needed)
@@ -4911,12 +7393,13 @@ local function DrawIcons()
 		local unitpicSizeMult = 0.85
 		-- Texcoord inset for 30% zoom (0.15 on each side)
 		local picTexInset = 0.18 * (1 - (cameraState.zoom - config.unitpicZoomThreshold) / (1 - config.unitpicZoomThreshold))
-		-- Fixed border sizes in world units
-		local teamBorderSize = 3 * cameraState.zoom * distMult
-		local blackBorderSize = 4 * cameraState.zoom * distMult
+		-- Fixed border sizes in world units (scaled by resScale for R2T rendering)
+		local distMult = math.min(math.max(1, 2.2-(cameraState.zoom*3.3)), 3)
+		local teamBorderSize = 3 * cameraState.zoom * distMult * resScale
+		local blackBorderSize = 4 * cameraState.zoom * distMult * resScale
 		-- Corner cut ratio (0.25 = cut 25% of each corner of the unitpic)
 		local cornerCutRatio = 0.25
-
+		
 		-- Helper function to draw octagon vertices (for use in BeginEnd with TRIANGLE_FAN)
 		-- Uses absolute corner cut 'c' so all layers align
 		local function drawOctagonVertices(cx, cy, s, c)
@@ -4931,7 +7414,7 @@ local function DrawIcons()
 			glFunc.Vertex(cx - s, cy - s + c, 0)  -- Left bottom side
 			glFunc.Vertex(cx - s + c, cy - s, 0)  -- Close back to start
 		end
-
+		
 		-- Helper for textured octagon (unitpic) - Y flipped
 		-- Uses absolute corner cut 'c' so all layers align
 		-- Maps texture coordinates directly based on vertex position within the square
@@ -4987,116 +7470,47 @@ local function DrawIcons()
 			glFunc.TexCoord(tx, ty)
 			glFunc.Vertex(cx - s + c, cy - s, 0)
 		end
-
-		-- PASS 1: Draw black outer borders (no texture)
-		glFunc.Texture(false)
-		glFunc.Color(0, 0, 0, 0.9)
-		if render.minimapRotation ~= 0 then
-			for texture, indices in pairs(unitpicsByTexture) do
-				local indexCount = #indices
-				for j = 1, indexCount do
-					local i = indices[j]
-					local cx = drawData.iconX[i]
-					local cy = drawData.iconY[i]
-					local udef = drawData.iconUdef[i]
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
-					local borderSize = iconSize + teamBorderSize + blackBorderSize
-					local cornerCut = (iconSize + teamBorderSize + blackBorderSize) * cornerCutRatio * 1.2  -- Absolute corner cut based on unitpic size
-
-					glFunc.PushMatrix()
-					glFunc.Translate(cx, cy, 0)
-					glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
-					glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, 0, 0, borderSize, cornerCut)
-					glFunc.PopMatrix()
+		
+		-- Helper function to draw a single unitpic with all three layers (border, team color, texture)
+		local function drawUnitpic(i, isRotated)
+			local cx = drawData.iconX[i]
+			local cy = drawData.iconY[i]
+			local udef = drawData.iconUdef[i]
+			local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
+			local borderSize = iconSize + teamBorderSize + blackBorderSize
+			local teamBorderSizeTotal = iconSize + teamBorderSize
+			local cornerCut = borderSize * cornerCutRatio
+			local cornerCutOuter = borderSize * cornerCutRatio * 1.2
+			
+			local buildProgress = drawData.iconBuildProgress[i]
+			local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
+			local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
+			local color = teamColors[drawData.iconTeam[i]]
+			
+			-- Use unitpic (engine's #unitDefID texture reference)
+			local unitpic = cache.unitPic[udef]
+			
+			if isRotated then
+				glFunc.PushMatrix()
+				glFunc.Translate(cx, cy, 0)
+				glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+				
+				-- Black border
+				glFunc.Texture(false)
+				glFunc.Color(0, 0, 0, 0.9)
+				glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, 0, 0, borderSize, cornerCutOuter)
+				
+				-- Team color border
+				if drawData.iconSelected[i] then
+					glFunc.Color(1, 1, 1, 1)
+				else
+					glFunc.Color(color[1], color[2], color[3], 1)
 				end
-			end
-		else
-			for texture, indices in pairs(unitpicsByTexture) do
-				local indexCount = #indices
-				for j = 1, indexCount do
-					local i = indices[j]
-					local cx = drawData.iconX[i]
-					local cy = drawData.iconY[i]
-					local udef = drawData.iconUdef[i]
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
-					local borderSize = iconSize + teamBorderSize + blackBorderSize
-					local cornerCut = (iconSize + teamBorderSize + blackBorderSize) * cornerCutRatio * 1.2	-- Absolute corner cut based on unitpic size
-
-					glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, cx, cy, borderSize, cornerCut)
-				end
-			end
-		end
-
-		-- PASS 2: Draw team-colored inner borders (no texture)
-		if render.minimapRotation ~= 0 then
-			for texture, indices in pairs(unitpicsByTexture) do
-				local indexCount = #indices
-				for j = 1, indexCount do
-					local i = indices[j]
-					local cx = drawData.iconX[i]
-					local cy = drawData.iconY[i]
-					local udef = drawData.iconUdef[i]
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
-					local borderSize = iconSize + teamBorderSize
-					local cornerCut = (iconSize + teamBorderSize + blackBorderSize) * cornerCutRatio  -- Absolute corner cut based on unitpic size
-
-					local color = teamColors[drawData.iconTeam[i]]
-					if drawData.iconSelected[i] then
-						glFunc.Color(1, 1, 1, 1)
-					else
-						glFunc.Color(color[1], color[2], color[3], 1)
-					end
-
-					glFunc.PushMatrix()
-					glFunc.Translate(cx, cy, 0)
-					glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
-					glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, 0, 0, borderSize, cornerCut)
-					glFunc.PopMatrix()
-				end
-			end
-		else
-			for texture, indices in pairs(unitpicsByTexture) do
-				local indexCount = #indices
-				for j = 1, indexCount do
-					local i = indices[j]
-					local cx = drawData.iconX[i]
-					local cy = drawData.iconY[i]
-					local udef = drawData.iconUdef[i]
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
-					local borderSize = iconSize + teamBorderSize
-					local cornerCut = (iconSize + teamBorderSize + blackBorderSize) * cornerCutRatio  -- Absolute corner cut based on unitpic size
-
-					local color = teamColors[drawData.iconTeam[i]]
-					if drawData.iconSelected[i] then
-						glFunc.Color(1, 1, 1, 1)
-					else
-						glFunc.Color(color[1], color[2], color[3], 1)
-					end
-
-					glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, cx, cy, borderSize, cornerCut)
-				end
-			end
-		end
-
-		-- PASS 3: Draw unitpics on top (textured octagons)
-		for texture, indices in pairs(unitpicsByTexture) do
-			glFunc.Texture(texture)
-			local indexCount = #indices
-
-			if render.minimapRotation ~= 0 then
-				for j = 1, indexCount do
-					local i = indices[j]
-					local cx = drawData.iconX[i]
-					local cy = drawData.iconY[i]
-					local udef = drawData.iconUdef[i]
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
-					local cornerCut = (iconSize + teamBorderSize + blackBorderSize) * cornerCutRatio  -- Absolute corner cut based on unitpic size
-
-					local buildProgress = drawData.iconBuildProgress[i]
-					local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
-
-					local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
-
+				glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, 0, 0, teamBorderSizeTotal, cornerCut)
+				
+				-- Unitpic texture
+				if unitpic then
+					glFunc.Texture(unitpic)
 					if drawData.iconSelected[i] then
 						if isHovered then
 							glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
@@ -5104,7 +7518,6 @@ local function DrawIcons()
 							glFunc.Color(1, 1, 1, opacity)
 						end
 					else
-						local color = teamColors[drawData.iconTeam[i]]
 						local brightness = 0.7 + (color[1] + color[2] + color[3]) / 9
 						if isHovered then
 							glFunc.Color(brightness * 1.2, brightness * 1.2, brightness * 1.2, opacity)
@@ -5112,27 +7525,27 @@ local function DrawIcons()
 							glFunc.Color(brightness, brightness, brightness, opacity)
 						end
 					end
-
-					glFunc.PushMatrix()
-					glFunc.Translate(cx, cy, 0)
-					glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
 					glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawTexturedOctagonVertices, 0, 0, iconSize, cornerCut, picTexInset)
-					glFunc.PopMatrix()
 				end
+				
+				glFunc.PopMatrix()
 			else
-				for j = 1, indexCount do
-					local i = indices[j]
-					local cx = drawData.iconX[i]
-					local cy = drawData.iconY[i]
-					local udef = drawData.iconUdef[i]
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size * unitpicSizeMult
-					local cornerCut = (iconSize + teamBorderSize + blackBorderSize) * cornerCutRatio  -- Absolute corner cut based on unitpic size
-
-					local buildProgress = drawData.iconBuildProgress[i]
-					local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
-
-					local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
-
+				-- Black border
+				glFunc.Texture(false)
+				glFunc.Color(0, 0, 0, 0.9)
+				glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, cx, cy, borderSize, cornerCutOuter)
+				
+				-- Team color border
+				if drawData.iconSelected[i] then
+					glFunc.Color(1, 1, 1, 1)
+				else
+					glFunc.Color(color[1], color[2], color[3], 1)
+				end
+				glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawOctagonVertices, cx, cy, teamBorderSizeTotal, cornerCut)
+				
+				-- Unitpic texture
+				if unitpic then
+					glFunc.Texture(unitpic)
 					if drawData.iconSelected[i] then
 						if isHovered then
 							glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
@@ -5140,8 +7553,6 @@ local function DrawIcons()
 							glFunc.Color(1, 1, 1, opacity)
 						end
 					else
-						opacity = opacity
-						local color = teamColors[drawData.iconTeam[i]]
 						local brightness = 0.7 + (color[1] + color[2] + color[3]) / 9
 						if isHovered then
 							glFunc.Color(brightness * 1.2, brightness * 1.2, brightness * 1.2, opacity)
@@ -5149,75 +7560,91 @@ local function DrawIcons()
 							glFunc.Color(brightness, brightness, brightness, opacity)
 						end
 					end
-
 					glFunc.BeginEnd(glConst.TRIANGLE_FAN, drawTexturedOctagonVertices, cx, cy, iconSize, cornerCut, picTexInset)
 				end
 			end
 		end
+		
+		local isRotated = render.minimapRotation ~= 0
+		
+		-- PASS 1: Draw structure unitpics (sorted by cost within each group)
+		for groupKey, indices in pairs(unitpicsByTexture) do
+			if strFind(groupKey, "_structure", 1, true) then
+				for j = 1, #indices do
+					drawUnitpic(indices[j], isRotated)
+				end
+			end
+		end
+		
+		-- PASS 2: Draw ground mobile unitpics
+		for groupKey, indices in pairs(unitpicsByTexture) do
+			if not strFind(groupKey, "_elevated", 1, true) and not strFind(groupKey, "_commander", 1, true) and not strFind(groupKey, "_structure", 1, true) then
+				for j = 1, #indices do
+					drawUnitpic(indices[j], isRotated)
+				end
+			end
+		end
+		
+		-- PASS 3: Draw commander unitpics on top of ground
+		for groupKey, indices in pairs(unitpicsByTexture) do
+			if strFind(groupKey, "_commander", 1, true) then
+				for j = 1, #indices do
+					drawUnitpic(indices[j], isRotated)
+				end
+			end
+		end
+		
+		-- PASS 4: Draw elevated unitpics on top
+		for groupKey, indices in pairs(unitpicsByTexture) do
+			if strFind(groupKey, "_elevated", 1, true) then
+				for j = 1, #indices do
+					drawUnitpic(indices[j], isRotated)
+				end
+			end
+		end
+		
 		glFunc.Texture(false)
 	end
 
 	-- Skip normal icon drawing when using unitpics
 	if not useUnitpics then
 
-	-- Draw white backgrounds for tracked units FIRST (before normal icons)
-	local trackedCount = #drawData.trackedIconIndices
-	if trackedCount > 0 then
-		--gl.Blending(GL.ONE, GL.ONE)  -- Full additive blending for bright white glow (when not inverted icon)
-		glFunc.Color(1, 1, 1, 0.5)
+		-- Draw white backgrounds for tracked units FIRST (before normal icons)
+		local trackedCount = drawData.trackedCount
+		if trackedCount > 0 then
+			--gl.Blending(GL.ONE, GL.ONE)  -- Full additive blending for bright white glow (when not inverted icon)
+			glFunc.Color(1, 1, 1, 0.5)
 
-		-- Group tracked units by texture for batching
-		local trackedByTexture = {}
-		for i = 1, trackedCount do
-			local idx = drawData.trackedIconIndices[i]
-			local udef = drawData.iconUdef[idx]
-			if udef and cache.unitIcon[udef] then
-				local texture = cache.unitIcon[udef].bitmap
-				if texture then
-					if not trackedByTexture[texture] then
-						trackedByTexture[texture] = {}
+			-- Group tracked units by texture for batching (reuse pooled table)
+			local trackedByTexture = pools.trackedByTexture
+			-- Clear from previous frame
+			for k, t in pairs(trackedByTexture) do
+				for i = #t, 1, -1 do t[i] = nil end
+			end
+			for i = 1, trackedCount do
+				local idx = drawData.trackedIconIndices[i]
+				local udef = drawData.iconUdef[idx]
+				if udef and cache.unitIcon[udef] then
+					local texture = cache.unitIcon[udef].bitmap
+					if texture then
+						local group = trackedByTexture[texture]
+						if not group then
+							group = {}
+							trackedByTexture[texture] = group
+						end
+						group[#group + 1] = idx
 					end
-					trackedByTexture[texture][#trackedByTexture[texture] + 1] = idx
 				end
 			end
-		end
 
-		-- Draw tracked unit backgrounds grouped by texture
-		for texture, indices in pairs(trackedByTexture) do
-			local invertedTexture = string.gsub(texture, "icons/", "icons/inverted/")
-			glFunc.Texture(invertedTexture)
-
-			-- Draw with counter-rotation if map is rotated
-			if render.minimapRotation ~= 0 then
-				for j = 1, #indices do
-					local idx = indices[j]
-					if drawData.iconBuildProgress[idx] >= 1 then
-						local cx = drawData.iconX[idx]
-						local cy = drawData.iconY[idx]
-						local udef = drawData.iconUdef[idx]
-						local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size
-						local baseSize = cache.unitIcon[udef].size
-						local borderPixels = 0.09 / baseSize  -- Inverse relationship: smaller units get proportionally more border
-						local enlargedSize = iconSize * (1 + borderPixels)
-
-						glFunc.PushMatrix()
-						glFunc.Translate(cx, cy, 0)
-						glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
-						glFunc.BeginEnd(glConst.QUADS, function()
-							glFunc.TexCoord(texInset, 1 - texInset)
-							glFunc.Vertex(-enlargedSize, -enlargedSize)
-							glFunc.TexCoord(1 - texInset, 1 - texInset)
-							glFunc.Vertex(enlargedSize, -enlargedSize)
-							glFunc.TexCoord(1 - texInset, texInset)
-							glFunc.Vertex(enlargedSize, enlargedSize)
-							glFunc.TexCoord(texInset, texInset)
-							glFunc.Vertex(-enlargedSize, enlargedSize)
-						end)
-						glFunc.PopMatrix()
-					end
-				end
-			else
-				glFunc.BeginEnd(glConst.QUADS, function()
+			-- Draw tracked unit backgrounds grouped by texture
+			for texture, indices in pairs(trackedByTexture) do
+				if #indices > 0 then
+					local invertedTexture = strGsub(texture, "icons/", "icons/inverted/")
+					glFunc.Texture(invertedTexture)
+				
+				-- Draw with counter-rotation if map is rotated
+				if render.minimapRotation ~= 0 then
 					for j = 1, #indices do
 						local idx = indices[j]
 						if drawData.iconBuildProgress[idx] >= 1 then
@@ -5229,168 +7656,153 @@ local function DrawIcons()
 							local borderPixels = 0.09 / baseSize  -- Inverse relationship: smaller units get proportionally more border
 							local enlargedSize = iconSize * (1 + borderPixels)
 
-							glFunc.TexCoord(texInset, 1 - texInset)
-							glFunc.Vertex(cx - enlargedSize, cy - enlargedSize)
-							glFunc.TexCoord(1 - texInset, 1 - texInset)
-							glFunc.Vertex(cx + enlargedSize, cy - enlargedSize)
-							glFunc.TexCoord(1 - texInset, texInset)
-							glFunc.Vertex(cx + enlargedSize, cy + enlargedSize)
-							glFunc.TexCoord(texInset, texInset)
-							glFunc.Vertex(cx - enlargedSize, cy + enlargedSize)
+							glFunc.PushMatrix()
+							glFunc.Translate(cx, cy, 0)
+							glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.TexCoord(texInset, 1 - texInset)
+								glFunc.Vertex(-enlargedSize, -enlargedSize)
+								glFunc.TexCoord(1 - texInset, 1 - texInset)
+								glFunc.Vertex(enlargedSize, -enlargedSize)
+								glFunc.TexCoord(1 - texInset, texInset)
+								glFunc.Vertex(enlargedSize, enlargedSize)
+								glFunc.TexCoord(texInset, texInset)
+								glFunc.Vertex(-enlargedSize, enlargedSize)
+							end)
+							glFunc.PopMatrix()
 						end
 					end
-				end)
-			end
-		end
-		glFunc.Texture(false)
-	end
-
-	-- Draw bright glow for hovered unit (when command is active)
-	if drawData.hoveredUnitID then
-		glFunc.Color(1, 0.95, 0, 0.66)  -- Bright yellow glow
-		gl.Blending(GL.SRC_ALPHA, GL.ONE)  -- Additive blending for bright glow
-
-		-- Find the hovered unit in the draw data
-		for i = 1, iconCount do
-			if drawData.iconUnitID[i] == drawData.hoveredUnitID and drawData.iconBuildProgress[i] >= 1 then
-				local cx = drawData.iconX[i]
-				local cy = drawData.iconY[i]
-				local udef = drawData.iconUdef[i]
-
-				if udef and cache.unitIcon[udef] then
-					local texture = cache.unitIcon[udef].bitmap
-					local invertedTexture = string.gsub(texture, "icons/", "icons/inverted/")
-					glFunc.Texture(invertedTexture)
-
-					local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size
-					local baseSize = cache.unitIcon[udef].size
-					local borderPixels = 0.15 / baseSize  -- Larger border for hover glow
-					local enlargedSize = iconSize * (1 + borderPixels)
-
-					if render.minimapRotation ~= 0 then
-						glFunc.PushMatrix()
-						glFunc.Translate(cx, cy, 0)
-						glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
-						glFunc.BeginEnd(glConst.QUADS, function()
-							glFunc.TexCoord(texInset, 1 - texInset)
-							glFunc.Vertex(-enlargedSize, -enlargedSize)
-							glFunc.TexCoord(1 - texInset, 1 - texInset)
-							glFunc.Vertex(enlargedSize, -enlargedSize)
-							glFunc.TexCoord(1 - texInset, texInset)
-							glFunc.Vertex(enlargedSize, enlargedSize)
-							glFunc.TexCoord(texInset, texInset)
-							glFunc.Vertex(-enlargedSize, enlargedSize)
-						end)
-						glFunc.PopMatrix()
-					else
-						glFunc.BeginEnd(glConst.QUADS, function()
-							glFunc.TexCoord(texInset, 1 - texInset)
-							glFunc.Vertex(cx - enlargedSize, cy - enlargedSize)
-							glFunc.TexCoord(1 - texInset, 1 - texInset)
-							glFunc.Vertex(cx + enlargedSize, cy - enlargedSize)
-							glFunc.TexCoord(1 - texInset, texInset)
-							glFunc.Vertex(cx + enlargedSize, cy + enlargedSize)
-							glFunc.TexCoord(texInset, texInset)
-							glFunc.Vertex(cx - enlargedSize, cy + enlargedSize)
-						end)
-					end
-					glFunc.Texture(false)
 				else
-					-- Default icon - draw circle glow
-					local defaultIconSize = config.iconRadius * 0.5 * cameraState.zoom * distMult
-					local glowSize = defaultIconSize * 1.4
-					glFunc.Texture('LuaUI/Images/pip/PipBlip.png')
+					glFunc.BeginEnd(glConst.QUADS, function()
+						for j = 1, #indices do
+							local idx = indices[j]
+							if drawData.iconBuildProgress[idx] >= 1 then
+								local cx = drawData.iconX[idx]
+								local cy = drawData.iconY[idx]
+								local udef = drawData.iconUdef[idx]
+								local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size
+								local baseSize = cache.unitIcon[udef].size
+								local borderPixels = 0.09 / baseSize  -- Inverse relationship: smaller units get proportionally more border
+								local enlargedSize = iconSize * (1 + borderPixels)
 
-					if render.minimapRotation ~= 0 then
-						glFunc.PushMatrix()
-						glFunc.Translate(cx, cy, 0)
-						glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
-						glFunc.BeginEnd(glConst.QUADS, function()
-							glFunc.TexCoord(texInset, 1 - texInset)
-							glFunc.Vertex(-glowSize, -glowSize)
-							glFunc.TexCoord(1 - texInset, 1 - texInset)
-							glFunc.Vertex(glowSize, -glowSize)
-							glFunc.TexCoord(1 - texInset, texInset)
-							glFunc.Vertex(glowSize, glowSize)
-							glFunc.TexCoord(texInset, texInset)
-							glFunc.Vertex(-glowSize, glowSize)
-						end)
-						glFunc.PopMatrix()
-					else
-						glFunc.BeginEnd(glConst.QUADS, function()
-							glFunc.TexCoord(texInset, 1 - texInset)
-							glFunc.Vertex(cx - glowSize, cy - glowSize)
-							glFunc.TexCoord(1 - texInset, 1 - texInset)
-							glFunc.Vertex(cx + glowSize, cy - glowSize)
-							glFunc.TexCoord(1 - texInset, texInset)
-							glFunc.Vertex(cx + glowSize, cy + glowSize)
-							glFunc.TexCoord(texInset, texInset)
-							glFunc.Vertex(cx - glowSize, cy + glowSize)
-						end)
-					end
-					glFunc.Texture(false)
+								glFunc.TexCoord(texInset, 1 - texInset)
+								glFunc.Vertex(cx - enlargedSize, cy - enlargedSize)
+								glFunc.TexCoord(1 - texInset, 1 - texInset)
+								glFunc.Vertex(cx + enlargedSize, cy - enlargedSize)
+								glFunc.TexCoord(1 - texInset, texInset)
+								glFunc.Vertex(cx + enlargedSize, cy + enlargedSize)
+								glFunc.TexCoord(texInset, texInset)
+								glFunc.Vertex(cx - enlargedSize, cy + enlargedSize)
+							end
+						end
+					end)
 				end
-				break  -- Found the hovered unit, no need to continue
+				end  -- if #indices > 0
 			end
+			glFunc.Texture(false)
 		end
 
-		gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)  -- Restore normal blending
-	end	-- Draw icons grouped by texture (minimizes texture binding)
-	for texture, indices in pairs(iconsByTexture) do
-		glFunc.Texture(texture)
-		local indexCount = #indices
+		-- Draw bright glow for hovered unit (when command is active)
+		if drawData.hoveredUnitID then
+			glFunc.Color(1, 0.95, 0, 0.66)  -- Bright yellow glow
+			gl.Blending(GL.SRC_ALPHA, GL.ONE)  -- Additive blending for bright glow
 
-		-- Draw normal icons
+			-- Find the hovered unit in the draw data
+			for i = 1, iconCount do
+				if drawData.iconUnitID[i] == drawData.hoveredUnitID and drawData.iconBuildProgress[i] >= 1 then
+					local cx = drawData.iconX[i]
+					local cy = drawData.iconY[i]
+					local udef = drawData.iconUdef[i]
+
+					if udef and cache.unitIcon[udef] then
+						local texture = cache.unitIcon[udef].bitmap
+						local invertedTexture = strGsub(texture, "icons/", "icons/inverted/")
+						glFunc.Texture(invertedTexture)
+
+						local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size
+						local baseSize = cache.unitIcon[udef].size
+						local borderPixels = 0.15 / baseSize  -- Larger border for hover glow
+						local enlargedSize = iconSize * (1 + borderPixels)
+
+						if render.minimapRotation ~= 0 then
+							glFunc.PushMatrix()
+							glFunc.Translate(cx, cy, 0)
+							glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.TexCoord(texInset, 1 - texInset)
+								glFunc.Vertex(-enlargedSize, -enlargedSize)
+								glFunc.TexCoord(1 - texInset, 1 - texInset)
+								glFunc.Vertex(enlargedSize, -enlargedSize)
+								glFunc.TexCoord(1 - texInset, texInset)
+								glFunc.Vertex(enlargedSize, enlargedSize)
+								glFunc.TexCoord(texInset, texInset)
+								glFunc.Vertex(-enlargedSize, enlargedSize)
+							end)
+							glFunc.PopMatrix()
+						else
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.TexCoord(texInset, 1 - texInset)
+								glFunc.Vertex(cx - enlargedSize, cy - enlargedSize)
+								glFunc.TexCoord(1 - texInset, 1 - texInset)
+								glFunc.Vertex(cx + enlargedSize, cy - enlargedSize)
+								glFunc.TexCoord(1 - texInset, texInset)
+								glFunc.Vertex(cx + enlargedSize, cy + enlargedSize)
+								glFunc.TexCoord(texInset, texInset)
+								glFunc.Vertex(cx - enlargedSize, cy + enlargedSize)
+							end)
+						end
+						glFunc.Texture(false)
+					else
+						-- Default icon - draw circle glow
+						local defaultIconSize = iconRadiusZoomDistMult * 0.5
+						local glowSize = defaultIconSize * 1.4
+						glFunc.Texture('LuaUI/Images/pip/PipBlip.png')
+						
+						if render.minimapRotation ~= 0 then
+							glFunc.PushMatrix()
+							glFunc.Translate(cx, cy, 0)
+							glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.TexCoord(texInset, 1 - texInset)
+								glFunc.Vertex(-glowSize, -glowSize)
+								glFunc.TexCoord(1 - texInset, 1 - texInset)
+								glFunc.Vertex(glowSize, -glowSize)
+								glFunc.TexCoord(1 - texInset, texInset)
+								glFunc.Vertex(glowSize, glowSize)
+								glFunc.TexCoord(texInset, texInset)
+								glFunc.Vertex(-glowSize, glowSize)
+							end)
+							glFunc.PopMatrix()
+						else
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.TexCoord(texInset, 1 - texInset)
+								glFunc.Vertex(cx - glowSize, cy - glowSize)
+								glFunc.TexCoord(1 - texInset, 1 - texInset)
+								glFunc.Vertex(cx + glowSize, cy - glowSize)
+								glFunc.TexCoord(1 - texInset, texInset)
+								glFunc.Vertex(cx + glowSize, cy + glowSize)
+								glFunc.TexCoord(texInset, texInset)
+								glFunc.Vertex(cx - glowSize, cy + glowSize)
+							end)
+						end
+						glFunc.Texture(false)
+					end
+					break  -- Found the hovered unit, no need to continue
+				end
+			end
+
+			gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)  -- Restore normal blending
+		end	-- Draw icons in two passes: ground units first, then elevated units on top
+		-- Uses texture batching within each pass for performance
 		gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
-
-		-- Draw with counter-rotation if map is rotated
-		if render.minimapRotation ~= 0 then
-			for j = 1, indexCount do
-				local i = indices[j]
-				local cx = drawData.iconX[i]
-				local cy = drawData.iconY[i]
-				local udef = drawData.iconUdef[i]
-				local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size
-
-				local buildProgress = drawData.iconBuildProgress[i]
-				local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
-
-				local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
-
-				if drawData.iconSelected[i] then
-					if isHovered then
-						glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
-					else
-						glFunc.Color(1, 1, 1, opacity)
-					end
-				else
-					local color = teamColors[drawData.iconTeam[i]]
-					if isHovered then
-						glFunc.Color(math.min(1.0, color[1] * 1.3), math.min(1.0, color[2] * 1.3), math.min(1.0, color[3] * 1.3), opacity)
-					else
-						glFunc.Color(color[1], color[2], color[3], opacity)
-					end
-				end
-
-				-- Counter-rotate to keep icon upright
-				glFunc.PushMatrix()
-				glFunc.Translate(cx, cy, 0)
-				glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
-				glFunc.BeginEnd(glConst.QUADS, function()
-					glFunc.TexCoord(texInset, 1 - texInset)
-					glFunc.Vertex(-iconSize, -iconSize)
-					glFunc.TexCoord(1 - texInset, 1 - texInset)
-					glFunc.Vertex(iconSize, -iconSize)
-					glFunc.TexCoord(1 - texInset, texInset)
-					glFunc.Vertex(iconSize, iconSize)
-					glFunc.TexCoord(texInset, texInset)
-					glFunc.Vertex(-iconSize, iconSize)
-				end)
-				glFunc.PopMatrix()
-			end
-		else
-			-- Fast batch path when no rotation
-			glFunc.BeginEnd(glConst.QUADS, function()
+		local defaultIconSize = iconRadiusZoomDistMult * 0.5
+	
+		-- Helper function to draw a batch of icons for a texture group
+		local function drawIconBatch(texture, indices, isRotated)
+			glFunc.Texture(texture)
+			local indexCount = #indices
+			
+			if isRotated then
 				for j = 1, indexCount do
 					local i = indices[j]
 					local cx = drawData.iconX[i]
@@ -5400,7 +7812,6 @@ local function DrawIcons()
 
 					local buildProgress = drawData.iconBuildProgress[i]
 					local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
-
 					local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
 
 					if drawData.iconSelected[i] then
@@ -5417,135 +7828,219 @@ local function DrawIcons()
 							glFunc.Color(color[1], color[2], color[3], opacity)
 						end
 					end
-					glFunc.TexCoord(texInset, 1 - texInset)
-					glFunc.Vertex(cx - iconSize, cy - iconSize)
-					glFunc.TexCoord(1 - texInset, 1 - texInset)
-					glFunc.Vertex(cx + iconSize, cy - iconSize)
-					glFunc.TexCoord(1 - texInset, texInset)
-					glFunc.Vertex(cx + iconSize, cy + iconSize)
-					glFunc.TexCoord(texInset, texInset)
-					glFunc.Vertex(cx - iconSize, cy + iconSize)
+					
+					glFunc.PushMatrix()
+					glFunc.Translate(cx, cy, 0)
+					glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+					glFunc.BeginEnd(glConst.QUADS, function()
+						glFunc.TexCoord(texInset, 1 - texInset)
+						glFunc.Vertex(-iconSize, -iconSize)
+						glFunc.TexCoord(1 - texInset, 1 - texInset)
+						glFunc.Vertex(iconSize, -iconSize)
+						glFunc.TexCoord(1 - texInset, texInset)
+						glFunc.Vertex(iconSize, iconSize)
+						glFunc.TexCoord(texInset, texInset)
+						glFunc.Vertex(-iconSize, iconSize)
+					end)
+					glFunc.PopMatrix()
 				end
-			end)
-		end
-	end
-
-	-- Draw default icons (fallback radar blip texture for unknown unit types)
-	if defaultCount > 0 then
-		glFunc.Texture('LuaUI/Images/pip/PipBlip.png')
-		local defaultIconSize = config.iconRadius * 0.5 * cameraState.zoom * distMult
-
-		if render.minimapRotation ~= 0 then
-			for j = 1, defaultCount do
-				local i = defaultIconIndices[j]
-				local cx = drawData.iconX[i]
-				local cy = drawData.iconY[i]
-
-				local buildProgress = drawData.iconBuildProgress[i]
-				local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
-
-				local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
-
-				if drawData.iconSelected[i] then
-					if isHovered then
-						glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
-					else
-						glFunc.Color(1, 1, 1, opacity)
-					end
-				else
-					local color = teamColors[drawData.iconTeam[i]]
-					if isHovered then
-						glFunc.Color(math.min(1.0, color[1] * 1.55), math.min(1.0, color[2] * 1.55), math.min(1.0, color[3] * 1.55), opacity)
-					else
-						glFunc.Color(color[1], color[2], color[3], opacity)
-					end
-				end
-
-				-- Counter-rotate to keep icon upright
-				glFunc.PushMatrix()
-				glFunc.Translate(cx, cy, 0)
-				glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+			else
 				glFunc.BeginEnd(glConst.QUADS, function()
-					glFunc.TexCoord(texInset, 1 - texInset)
-					glFunc.Vertex(-defaultIconSize, -defaultIconSize)
-					glFunc.TexCoord(1 - texInset, 1 - texInset)
-					glFunc.Vertex(defaultIconSize, -defaultIconSize)
-					glFunc.TexCoord(1 - texInset, texInset)
-					glFunc.Vertex(defaultIconSize, defaultIconSize)
-					glFunc.TexCoord(texInset, texInset)
-					glFunc.Vertex(-defaultIconSize, defaultIconSize)
+					for j = 1, indexCount do
+						local i = indices[j]
+						local cx = drawData.iconX[i]
+						local cy = drawData.iconY[i]
+						local udef = drawData.iconUdef[i]
+						local iconSize = iconRadiusZoomDistMult * cache.unitIcon[udef].size
+
+						local buildProgress = drawData.iconBuildProgress[i]
+						local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
+						local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
+
+						if drawData.iconSelected[i] then
+							if isHovered then
+								glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
+							else
+								glFunc.Color(1, 1, 1, opacity)
+							end
+						else
+							local color = teamColors[drawData.iconTeam[i]]
+							if isHovered then
+								glFunc.Color(math.min(1.0, color[1] * 1.3), math.min(1.0, color[2] * 1.3), math.min(1.0, color[3] * 1.3), opacity)
+							else
+								glFunc.Color(color[1], color[2], color[3], opacity)
+							end
+						end
+						glFunc.TexCoord(texInset, 1 - texInset)
+						glFunc.Vertex(cx - iconSize, cy - iconSize)
+						glFunc.TexCoord(1 - texInset, 1 - texInset)
+						glFunc.Vertex(cx + iconSize, cy - iconSize)
+						glFunc.TexCoord(1 - texInset, texInset)
+						glFunc.Vertex(cx + iconSize, cy + iconSize)
+						glFunc.TexCoord(texInset, texInset)
+						glFunc.Vertex(cx - iconSize, cy + iconSize)
+					end
 				end)
-				glFunc.PopMatrix()
 			end
-		else
-			glFunc.BeginEnd(glConst.QUADS, function()
-				for j = 1, defaultCount do
+		end
+		
+		-- Helper function to draw default icons
+		local function drawDefaultIconBatch(startIdx, count, isRotated)
+			if count <= 0 then return end
+			glFunc.Texture('LuaUI/Images/pip/PipBlip.png')
+			
+			if isRotated then
+				for j = startIdx, startIdx + count - 1 do
 					local i = defaultIconIndices[j]
 					local cx = drawData.iconX[i]
 					local cy = drawData.iconY[i]
 
-					-- 0.2 to 0.7 while building, then jump to 1.0 when complete
 					local buildProgress = drawData.iconBuildProgress[i]
-					local opacity
-					if buildProgress >= 1 then
-						opacity = 1.0
-					else
-						opacity = 0.2 + (buildProgress * 0.5)
-					end
+					local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
+					local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
 
-				-- Check if this unit is hovered
-				local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
-
-				if drawData.iconSelected[i] then
-					if isHovered then
-						glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
+					if drawData.iconSelected[i] then
+						if isHovered then
+							glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
+						else
+							glFunc.Color(1, 1, 1, opacity)
+						end
 					else
-						glFunc.Color(1, 1, 1, opacity)
+						local color = teamColors[drawData.iconTeam[i]]
+						if isHovered then
+							glFunc.Color(math.min(1.0, color[1] * 1.55), math.min(1.0, color[2] * 1.55), math.min(1.0, color[3] * 1.55), opacity)
+						else
+							glFunc.Color(color[1], color[2], color[3], opacity)
+						end
 					end
-				else
-					local color = teamColors[drawData.iconTeam[i]]
-					if isHovered then
-						glFunc.Color(math.min(1.0, color[1] * 1.55), math.min(1.0, color[2] * 1.55), math.min(1.0, color[3] * 1.55), opacity)
-					else
-						glFunc.Color(color[1], color[2], color[3], opacity)
-					end
+					
+					glFunc.PushMatrix()
+					glFunc.Translate(cx, cy, 0)
+					glFunc.Rotate(-render.minimapRotation * 180 / math.pi, 0, 0, 1)
+					glFunc.BeginEnd(glConst.QUADS, function()
+						glFunc.TexCoord(texInset, 1 - texInset)
+						glFunc.Vertex(-defaultIconSize, -defaultIconSize)
+						glFunc.TexCoord(1 - texInset, 1 - texInset)
+						glFunc.Vertex(defaultIconSize, -defaultIconSize)
+						glFunc.TexCoord(1 - texInset, texInset)
+						glFunc.Vertex(defaultIconSize, defaultIconSize)
+						glFunc.TexCoord(texInset, texInset)
+						glFunc.Vertex(-defaultIconSize, defaultIconSize)
+					end)
+					glFunc.PopMatrix()
 				end
-				-- Use manual texture coordinates with inset to prevent edge bleeding
-				glFunc.TexCoord(texInset, 1 - texInset)
-				glFunc.Vertex(cx - defaultIconSize, cy - defaultIconSize)
-				glFunc.TexCoord(1 - texInset, 1 - texInset)
-				glFunc.Vertex(cx + defaultIconSize, cy - defaultIconSize)
-				glFunc.TexCoord(1 - texInset, texInset)
-				glFunc.Vertex(cx + defaultIconSize, cy + defaultIconSize)
-				glFunc.TexCoord(texInset, texInset)
-				glFunc.Vertex(cx - defaultIconSize, cy + defaultIconSize)
+			else
+				glFunc.BeginEnd(glConst.QUADS, function()
+					for j = startIdx, startIdx + count - 1 do
+						local i = defaultIconIndices[j]
+						local cx = drawData.iconX[i]
+						local cy = drawData.iconY[i]
+
+						local buildProgress = drawData.iconBuildProgress[i]
+						local opacity = buildProgress >= 1 and 1.0 or (0.2 + (buildProgress * 0.5))
+						local isHovered = (drawData.hoveredUnitID and drawData.iconUnitID[i] == drawData.hoveredUnitID)
+
+						if drawData.iconSelected[i] then
+							if isHovered then
+								glFunc.Color(1, 1, 1, math.min(1.0, opacity * 1.3))
+							else
+								glFunc.Color(1, 1, 1, opacity)
+							end
+						else
+							local color = teamColors[drawData.iconTeam[i]]
+							if isHovered then
+								glFunc.Color(math.min(1.0, color[1] * 1.55), math.min(1.0, color[2] * 1.55), math.min(1.0, color[3] * 1.55), opacity)
+							else
+								glFunc.Color(color[1], color[2], color[3], opacity)
+							end
+						end
+						glFunc.TexCoord(texInset, 1 - texInset)
+						glFunc.Vertex(cx - defaultIconSize, cy - defaultIconSize)
+						glFunc.TexCoord(1 - texInset, 1 - texInset)
+						glFunc.Vertex(cx + defaultIconSize, cy - defaultIconSize)
+						glFunc.TexCoord(1 - texInset, texInset)
+						glFunc.Vertex(cx + defaultIconSize, cy + defaultIconSize)
+						glFunc.TexCoord(texInset, texInset)
+						glFunc.Vertex(cx - defaultIconSize, cy + defaultIconSize)
+					end
+				end)
 			end
-		end)
 		end
-	end
+		
+		local isRotated = render.minimapRotation ~= 0
+		
+		-- PASS 1: Draw structure units (texture batched)
+		for groupKey, indices in pairs(iconsByTexture) do
+			if strFind(groupKey, "_structure", 1, true) then
+				local texture = strGsub(groupKey, "_structure", "")
+				drawIconBatch(texture, indices, isRotated)
+			end
+		end
+		-- Draw structure default icons
+		drawDefaultIconBatch(1, defaultStructureCount, isRotated)
+		
+		-- PASS 2: Draw ground mobile units (texture batched)
+		for groupKey, indices in pairs(iconsByTexture) do
+			if not strFind(groupKey, "_elevated", 1, true) and not strFind(groupKey, "_commander", 1, true) and not strFind(groupKey, "_structure", 1, true) then
+				local texture = groupKey  -- Ground groups use texture as key directly
+				drawIconBatch(texture, indices, isRotated)
+			end
+		end
+		-- Draw ground default icons
+		drawDefaultIconBatch(iconCount + 1, defaultCount, isRotated)
+		
+		-- PASS 3: Draw commander units on top of ground (texture batched)
+		for groupKey, indices in pairs(iconsByTexture) do
+			if strFind(groupKey, "_commander", 1, true) then
+				local texture = strGsub(groupKey, "_commander", "")
+				drawIconBatch(texture, indices, isRotated)
+			end
+		end
+		-- Draw commander default icons
+		drawDefaultIconBatch(iconCount * 2 + 1, defaultCommanderCount, isRotated)
+		
+		-- PASS 4: Draw elevated units on top (texture batched)
+		for groupKey, indices in pairs(iconsByTexture) do
+			if strFind(groupKey, "_elevated", 1, true) then
+				local texture = strGsub(groupKey, "_elevated", "")
+				drawIconBatch(texture, indices, isRotated)
+			end
+		end
+		-- Draw elevated default icons
+		drawDefaultIconBatch(iconCount * 3 + 1, defaultElevatedCount, isRotated)
 
 	end  -- End of "if not useUnitpics" block
 
 	-- Draw radar blobs for units in radar but not in LOS
-	local radarBlobCount = #drawData.radarBlobX
+	local radarBlobCount = drawData.radarBlobCount
 	if radarBlobCount > 0 then
-		-- Separate radar blobs into known types (draw as icons) and unknown types (draw as blobs)
-		local knownRadarUnits = {}  -- Has unit icon
-		local unknownRadarUnits = {}  -- No icon, draw as blob
+		-- Reuse pool tables instead of per-frame allocations
+		local knownRadarUnits = pools.knownRadarUnits
+		local unknownRadarUnits = pools.unknownRadarUnits
+		local knownCount = 0
+		local unknownCount = 0
 
 		for i = 1, radarBlobCount do
 			local udef = drawData.radarBlobUdef[i]
 			if udef and cache.unitIcon[udef] then
-				knownRadarUnits[#knownRadarUnits + 1] = i
+				knownCount = knownCount + 1
+				knownRadarUnits[knownCount] = i
 			else
-				unknownRadarUnits[#unknownRadarUnits + 1] = i
+				unknownCount = unknownCount + 1
+				unknownRadarUnits[unknownCount] = i
 			end
 		end
 
 		-- Draw known radar units as semi-transparent icons
-		if #knownRadarUnits > 0 then
-			local radarIconsByTexture = {}
-			for j = 1, #knownRadarUnits do
+		if knownCount > 0 then
+			-- Reuse pool table and clear previous entries
+			local radarIconsByTexture = pools.radarIconsByTexture
+			for k in pairs(radarIconsByTexture) do
+				local arr = radarIconsByTexture[k]
+				for j = #arr, 1, -1 do arr[j] = nil end
+			end
+			
+			for j = 1, knownCount do
 				local i = knownRadarUnits[j]
 				local udef = drawData.radarBlobUdef[i]
 				local bitmap = cache.unitIcon[udef].bitmap
@@ -5596,7 +8091,7 @@ local function DrawIcons()
 		end
 
 		-- Draw unknown radar units as circular blobs
-		if #unknownRadarUnits > 0 then
+		if unknownCount > 0 then
 			glFunc.Texture('LuaUI/Images/pip/PipBlip.png')
 			local blobSize = iconRadiusZoomDistMult * 0.5
 
@@ -5607,7 +8102,7 @@ local function DrawIcons()
 			local wobbleSpeedY = time * config.radarWobbleSpeed * 1.15
 
 			glFunc.BeginEnd(glConst.QUADS, function()
-				for j = 1, #unknownRadarUnits do
+				for j = 1, unknownCount do
 					local i = unknownRadarUnits[j]
 					local uID = drawData.radarBlobUnitID[i]
 					local teamID = drawData.radarBlobTeam[i]
@@ -5634,11 +8129,39 @@ local function DrawIcons()
 		end
 	end
 
+	-- Draw start unit icon before game starts (when commander is not yet placed)
+	-- Skip in minimap mode (engine minimap replacement doesn't need this)
+	if not gameHasStarted and not isMinimapMode and miscState.startX and miscState.startX >= 0 then
+		local myTeamID = Spring.GetMyTeamID()
+		local startDefID = Spring.GetTeamRulesParam(myTeamID, "startUnit")
+		if startDefID and cache.unitIcon[startDefID] then
+			local iconData = cache.unitIcon[startDefID]
+			local iconSize = iconRadiusZoomDistMult * iconData.size
+			local cx, cy = WorldToPipCoords(miscState.startX, miscState.startZ)
+			local teamColor = teamColors[myTeamID] or {1, 1, 1}
+			
+			glFunc.Texture(iconData.bitmap)
+			glFunc.BeginEnd(glConst.QUADS, function()
+				glFunc.Color(teamColor[1], teamColor[2], teamColor[3], 1)
+				glFunc.TexCoord(texInset, 1 - texInset)
+				glFunc.Vertex(cx - iconSize, cy - iconSize)
+				glFunc.TexCoord(1 - texInset, 1 - texInset)
+				glFunc.Vertex(cx + iconSize, cy - iconSize)
+				glFunc.TexCoord(1 - texInset, texInset)
+				glFunc.Vertex(cx + iconSize, cy + iconSize)
+				glFunc.TexCoord(texInset, texInset)
+				glFunc.Vertex(cx - iconSize, cy + iconSize)
+			end)
+			glFunc.Texture(false)
+		end
+	end
+
 	glFunc.Texture(false)
 
 	-- Return iconRadiusZoomDistMult for build preview functions
 	return iconRadiusZoomDistMult
 end
+
 
 -- Helper function to draw units and features in PIP
 local function DrawUnitsAndFeatures(cachedSelectedUnits)
@@ -5667,33 +8190,69 @@ local function DrawUnitsAndFeatures(cachedSelectedUnits)
 		miscState.pipUnits = spFunc.GetUnitsInRectangle(render.world.l - margin, render.world.t - margin, render.world.r + margin, render.world.b + margin)
 	end
 
-	miscState.pipFeatures = spFunc.GetFeaturesInRectangle(render.world.l - margin, render.world.t - margin, render.world.r + margin, render.world.b + margin)
-
 	-- Cache counts to avoid repeated length calculations
 	local unitCount = #miscState.pipUnits
-	local featureCount = #miscState.pipFeatures
 
-	-- Clear icon arrays (faster than iterating and setting to nil)
-	for i = #drawData.iconTeam, 1, -1 do
-		drawData.iconTeam[i] = nil
-		drawData.iconX[i] = nil
-		drawData.iconY[i] = nil
-		drawData.iconUdef[i] = nil
-		drawData.iconSelected[i] = nil
-		drawData.iconBuildProgress[i] = nil
-		drawData.iconUnitID[i] = nil
+	-- Determine whether to use GL4 this frame (fall back to legacy for unitpics)
+	local useGL4ThisFrame = gl4Icons.enabled
+		and not (config.showUnitpics and cameraState.zoom >= config.unitpicZoomThreshold)
+
+	-- drawData management (legacy path only — GL4 path uses VBO instead)
+	local prevIconCount, prevRadarCount, prevTrackedCount = 0, 0, 0
+	if not useGL4ThisFrame then
+		prevIconCount = drawData.iconCount
+		prevRadarCount = drawData.radarBlobCount
+		prevTrackedCount = drawData.trackedCount
+		drawData.iconCount = 0
+		drawData.radarBlobCount = 0
+		drawData.trackedCount = 0
 	end
-	-- Clear radar blob arrays
-	for i = #drawData.radarBlobX, 1, -1 do
-		drawData.radarBlobX[i] = nil
-		drawData.radarBlobY[i] = nil
-		drawData.radarBlobTeam[i] = nil
-		drawData.radarBlobUdef[i] = nil
-		drawData.radarBlobUnitID[i] = nil
+
+	-- Pre-compute per-frame visibility context (avoids redundant API calls per unit)
+	local checkAllyTeamID = nil
+	if interactionState.trackingPlayerID and cameraState.mySpecState then
+		local _, _, _, playerTeamID = spFunc.GetPlayerInfo(interactionState.trackingPlayerID, false)
+		if playerTeamID then
+			local playerAllyTeamID = teamAllyTeamCache[playerTeamID] or Spring.GetTeamAllyTeamID(playerTeamID)
+			local _, fullview = Spring.GetSpectatingState()
+			local myAllyTeam = Spring.GetMyAllyTeamID()
+			if not fullview and playerAllyTeamID ~= myAllyTeam then
+				checkAllyTeamID = myAllyTeam
+			else
+				checkAllyTeamID = playerAllyTeamID
+			end
+		end
+	elseif state.losViewEnabled and state.losViewAllyTeam then
+		checkAllyTeamID = state.losViewAllyTeam
+	elseif not cameraState.mySpecState then
+		local myTeamID = Spring.GetMyTeamID()
+		checkAllyTeamID = teamAllyTeamCache[myTeamID] or Spring.GetTeamAllyTeamID(myTeamID)
+	elseif cameraState.mySpecState then
+		local _, fullview = Spring.GetSpectatingState()
+		if not fullview then
+			checkAllyTeamID = Spring.GetMyAllyTeamID()
+		end
 	end
-	-- Clear tracked indices
-	for i = #drawData.trackedIconIndices, 1, -1 do
-		drawData.trackedIconIndices[i] = nil
+
+	-- Pre-fetch player selections once (avoids per-unit WG lookup)
+	local playerSelections = nil
+	if interactionState.trackingPlayerID then
+		playerSelections = WG['allyselectedunits'] and WG['allyselectedunits'].getPlayerSelectedUnits(interactionState.trackingPlayerID)
+		if not playerSelections then playerSelections = {} end  -- empty table signals "use tracking mode" to DrawUnit
+	end
+
+	-- Build tracking set for O(1) lookup (avoids O(N*M) linear scan per unit)
+	local trackingSet = nil
+	if interactionState.areTracking then
+		trackingSet = pools.trackingSet
+		if not trackingSet then
+			trackingSet = {}
+			pools.trackingSet = trackingSet
+		end
+		for k in pairs(trackingSet) do trackingSet[k] = nil end
+		for _, trackedID in ipairs(interactionState.areTracking) do
+			trackingSet[trackedID] = true
+		end
 	end
 
 	-- Note: cameraRotY is now set in DrawScreen before this function is called
@@ -5709,6 +8268,9 @@ local function DrawUnitsAndFeatures(cachedSelectedUnits)
 	-- Precompute center translation values (used by all drawing)
 	local centerX = 0.5 * (render.dim.l + render.dim.r)
 	local centerY = 0.5 * (render.dim.b + render.dim.t)
+
+	-- Get resolution scale for R2T rendering (affects coordinate mapping, not icon sizes)
+	local resScale = render.contentScale or 1
 
 	-- Calculate content scale during minimize animation
 	local contentScale = 1.0
@@ -5729,24 +8291,123 @@ local function DrawUnitsAndFeatures(cachedSelectedUnits)
 		-- When maximizing (uiState.inMinMode = false), keep contentScale = 1.0 to avoid oversized units
 	end
 
+	-- Apply contentScale for animation, and resScale for high-res R2T rendering
+	-- resScale is multiplied to match the enlarged coordinate space
+	local drawScale = cameraState.zoom * contentScale * resScale
 	glFunc.PushMatrix()
 	glFunc.Translate(centerX, centerY, 0)
-	glFunc.Scale(cameraState.zoom * contentScale, cameraState.zoom * contentScale, cameraState.zoom * contentScale)
+	glFunc.Scale(drawScale, drawScale, drawScale)
 
-	-- Draw units (only icon data collection now, no 3D rendering)
-	for i = 1, unitCount do
-		DrawUnit(miscState.pipUnits[i])
-	end
 
 	-- Draw features (3D models)
-	if cameraState.zoom >= config.zoomFeatures then  -- Only draw features if zoom is above threshold
-		glFunc.Texture(0, '$units')
-		for i = 1, featureCount do
-			DrawFeature(miscState.pipFeatures[i])
+	local featureFade = 0
+	if cameraState.zoom >= config.zoomFeatures then
+		featureFade = math.min(1, (cameraState.zoom - config.zoomFeatures) / config.zoomFeaturesFadeRange)
+	end
+	if featureFade > 0 then  -- Only draw features if zoom is above threshold
+		miscState.pipFeatures = spFunc.GetFeaturesInRectangle(render.world.l - margin, render.world.t - margin, render.world.r + margin, render.world.b + margin)
+		local featureCount = #miscState.pipFeatures
+		if featureCount > 0 then
+			-- Premultiplied alpha: RGB = color * fade, A = fade
+			-- Pass 1: RGB only. Modulate by featureFade for premultiplied alpha.
+			-- Mask alpha writes because feature tex0.alpha is used
+			-- as a team-color/transparency mask and would cause semi-transparency
+			-- when the FBO is composited with premultiplied alpha.
+			gl.ColorMask(true, true, true, false)
+			glFunc.Color(featureFade, featureFade, featureFade, 1)
+			glFunc.Texture(0, '$units')
+			for i = 1, featureCount do
+				DrawFeature(miscState.pipFeatures[i])
+			end
+			-- Pass 2: alpha only. Write featureFade to alpha channel.
+			-- Re-render feature geometry without texture so the
+			-- fixed-function pipeline outputs glColor alpha.
+			-- Key: DepthTest must be LEQUAL (not default LESS) so fragments at the
+			-- same depth as pass 1 are accepted (D <= D = true).
+			gl.ColorMask(false, false, false, true)
+			gl.DepthTest(GL.LEQUAL)
+			gl.DepthMask(false)
+			glFunc.Texture(0, false)
+			glFunc.Color(1, 1, 1, featureFade)
+			for i = 1, featureCount do
+				DrawFeature(miscState.pipFeatures[i], true)  -- noTextures: skip texture bind
+			end
+			-- Restore
+			gl.ColorMask(true, true, true, true)
+			gl.DepthTest(true)
+			gl.DepthMask(true)
+			glFunc.Color(1, 1, 1, 1)
 		end
 	end
 
-		-- Draw projectiles if enabled
+	-- Draw units (only icon data collection now, no 3D rendering)
+	-- GL4 path skips this — data collection is done inside GL4DrawIcons instead
+	if not useGL4ThisFrame then
+		for i = 1, unitCount do
+			DrawUnit(miscState.pipUnits[i], checkAllyTeamID, playerSelections, trackingSet)
+		end
+
+		-- Inject ghost buildings (enemy buildings seen but no longer in LOS)
+		if checkAllyTeamID then
+			local pipUnitSet = {}
+			for i = 1, unitCount do
+				pipUnitSet[miscState.pipUnits[i]] = true
+			end
+			for gID, ghost in pairs(ghostBuildings) do
+				if not pipUnitSet[gID] then
+					-- If ghost position is currently in LOS but the unit is gone, remove the ghost
+					local gy = spFunc.GetGroundHeight(ghost.x, ghost.z)
+					if spFunc.IsPosInLos(ghost.x, gy, ghost.z, checkAllyTeamID) then
+						ghostBuildings[gID] = nil
+					else
+						if ghost.x >= render.world.l - margin and ghost.x <= render.world.r + margin and
+						   ghost.z >= render.world.t - margin and ghost.z <= render.world.b + margin then
+							local idx = drawData.iconCount + 1
+							drawData.iconCount = idx
+							drawData.iconTeam[idx] = ghost.teamID
+							drawData.iconX[idx] = worldToPipOffsetX + ghost.x * worldToPipScaleX
+							drawData.iconY[idx] = worldToPipOffsetZ + ghost.z * worldToPipScaleZ
+							drawData.iconUdef[idx] = ghost.defID
+							drawData.iconUnitID[idx] = gID
+							drawData.iconSelected[idx] = false
+							drawData.iconBuildProgress[idx] = 1
+						end
+					end
+				end
+			end
+		end
+
+		-- Truncate stale entries from previous frame (ensures no stale data is visible)
+		local newIconCount = drawData.iconCount
+		for i = newIconCount + 1, prevIconCount do
+			drawData.iconTeam[i] = nil
+			drawData.iconX[i] = nil
+			drawData.iconY[i] = nil
+			drawData.iconUdef[i] = nil
+			drawData.iconSelected[i] = nil
+			drawData.iconBuildProgress[i] = nil
+			drawData.iconUnitID[i] = nil
+		end
+		local newRadarCount = drawData.radarBlobCount
+		for i = newRadarCount + 1, prevRadarCount do
+			drawData.radarBlobX[i] = nil
+			drawData.radarBlobY[i] = nil
+			drawData.radarBlobTeam[i] = nil
+			drawData.radarBlobUdef[i] = nil
+			drawData.radarBlobUnitID[i] = nil
+		end
+		local newTrackedCount = drawData.trackedCount
+		for i = newTrackedCount + 1, prevTrackedCount do
+			drawData.trackedIconIndices[i] = nil
+		end
+	end
+
+	-- Reset GL4 primitive counters for this frame
+	if gl4Prim.enabled then
+		GL4ResetPrimCounts()
+	end
+
+	-- Draw projectiles if enabled
 	if config.drawProjectiles then
 		glFunc.Texture(false)  -- Disable textures for colored projectiles
 		gl.Blending(true)
@@ -5755,10 +8416,28 @@ local function DrawUnitsAndFeatures(cachedSelectedUnits)
 		if cameraState.zoom >= config.zoomProjectileDetail then
 			-- Get projectiles in the PIP window's world rectangle
 			local projectiles = spFunc.GetProjectilesInRectangle(render.world.l - margin, render.world.t - margin, render.world.r + margin, render.world.b + margin)
+			
+			-- Reuse pool table for active trails tracking (avoid per-frame allocations)
+			local activeTrails = pools.activeTrails
+			-- Clear previous frame's data
+			for k in pairs(activeTrails) do activeTrails[k] = nil end
+			
 			if projectiles then
 				local projectileCount = #projectiles
 				for i = 1, projectileCount do
-					DrawProjectile(projectiles[i])
+					local pID = projectiles[i]
+					DrawProjectile(pID)
+					-- Mark this trail as active if it exists
+					if cache.missileTrails[pID] then
+						activeTrails[pID] = true
+					end
+				end
+			end
+			
+			-- Clean up stale missile trails (projectiles that no longer exist)
+			for pID in pairs(cache.missileTrails) do
+				if not activeTrails[pID] then
+					cache.missileTrails[pID] = nil
 				end
 			end
 		end
@@ -5771,133 +8450,156 @@ local function DrawUnitsAndFeatures(cachedSelectedUnits)
 				-- Draw laser beams
 				DrawLaserBeams()
 			end
-
-			-- Draw explosions
-			DrawExplosions()
 		end
 
 		-- Draw seismic pings (always visible at any zoom level)
 		DrawSeismicPings()
-
+		
+		gl.DepthTest(true)
+		gl.Blending(false)
+	end
+	
+	-- Draw explosions independently (graduated visibility based on radius)
+	if config.drawExplosions then
+		gl.Blending(true)
+		gl.DepthTest(false)
+		glFunc.Texture(false)
+		DrawExplosions()
 		gl.DepthTest(true)
 		gl.Blending(false)
 	end
 
 	glFunc.PopMatrix()
 
+	-- Flush GL4 primitives (circles, quads, lines from projectiles/explosions/beams)
+	-- Must happen after PopMatrix since GL4 shaders bypass the matrix stack
+	if gl4Prim.enabled then
+		gl.Blending(true)
+		gl.DepthTest(false)
+		glFunc.Texture(false)
+		GL4FlushEffects()
+		gl.DepthTest(true)
+		gl.Blending(false)
+	end
 
 	glFunc.Texture(0, false)
 	gl.Blending(true)
-		gl.DepthMask(false)
-		gl.DepthTest(false)
+	gl.DepthMask(false)
+	gl.DepthTest(false)
 
-		local _, _, _, shift = Spring.GetModKeyState()
-		if shift then
-			gl.LineStipple("springdefault")
-			local selUnits = Spring.GetSelectedUnits()
-			local selCount = #selUnits
-			for i = 1, selCount do
-				glFunc.BeginEnd(glConst.LINES, UnitQueueVertices, selUnits[i])
-			end
-			gl.LineStipple(false)
+	-- Command queue drawing is handled by DrawCommandQueuesOverlay (called after this function)
+	-- which uses cached waypoints and batched rendering (GL4 or single BeginEnd calls).
+
+	-- Draw icons (GL4 instanced path or legacy CPU path)
+	local iconRadiusZoomDistMult
+	if useGL4ThisFrame then
+		-- Build selection set for GL4 path (same logic as playerSelections but as a simple set)
+		local selectedSet
+		if interactionState.trackingPlayerID then
+			selectedSet = WG['allyselectedunits'] and WG['allyselectedunits'].getPlayerSelectedUnits(interactionState.trackingPlayerID)
+		else
+			local selUnits2 = cachedSelectedUnits or Spring.GetSelectedUnits()
+			selectedSet = {}
+			for si = 1, #selUnits2 do selectedSet[selUnits2[si]] = true end
 		end
+		iconRadiusZoomDistMult = GL4DrawIcons(checkAllyTeamID, selectedSet)
+	else
+		iconRadiusZoomDistMult = DrawIcons()
+	end
 
-		-- Draw icons (when zoomed out)
-		local iconRadiusZoomDistMult = DrawIcons()
+	-- Draw ally cursors
+	if WG['allycursors'] and WG['allycursors'].getCursor and interactionState.trackingPlayerID then
+		local cursor, isNotIdle = WG['allycursors'].getCursor(interactionState.trackingPlayerID)
+		if cursor and isNotIdle then
+			local wx, wz = cursor[1], cursor[3]
+			local cx, cy = WorldToPipCoords(wx, wz)
+			local opacity = cursor[7] or 1
 
-		-- Draw ally cursors
-		if WG['allycursors'] and WG['allycursors'].getCursor and interactionState.trackingPlayerID then
-			local cursor, isNotIdle = WG['allycursors'].getCursor(interactionState.trackingPlayerID)
-			if cursor and isNotIdle then
-				local wx, wz = cursor[1], cursor[3]
-				local cx, cy = WorldToPipCoords(wx, wz)
-				local opacity = cursor[7] or 1
+			-- Get player's team color
+			local _, _, _, teamID = spFunc.GetPlayerInfo(interactionState.trackingPlayerID, false)
+			if teamID then
+				local r, g, b = Spring.GetTeamColor(teamID)
+				-- Scale cursor size: larger at low zoom, stays reasonable at high zoom
+				local resScale = config.contentResolutionScale or 1
+				local cursorSize = render.vsy * 0.0073 * resScale
+				-- Draw crosshair lines to PIP boundaries (stop at cursor edge)
+				--glFunc.Color(r*1.5+0.5, g*1.5+0.5, b*1.5+0.5, 0.08)
+				--glFunc.LineWidth(render.vsy / 600)
+				-- glFunc.BeginEnd(glConst.LINES, function()
+				-- 	-- Horizontal line (left to cursor)
+				-- 	glFunc.Vertex(0, cy)
+				-- 	glFunc.Vertex(cx - cursorSize, cy)
+				-- 	-- Horizontal line (cursor to right)
+				-- 	glFunc.Vertex(cx + cursorSize, cy)
+				-- 	glFunc.Vertex(render.dim.r - render.dim.l, cy)
+				-- 	-- Vertical line (bottom to cursor)
+				-- 	glFunc.Vertex(cx, 0)
+				-- 	glFunc.Vertex(cx, cy - cursorSize)
+				-- 	-- Vertical line (cursor to top)
+				-- 	glFunc.Vertex(cx, cy + cursorSize)
+				-- 	glFunc.Vertex(cx, render.dim.t - render.dim.b)
+				-- end)
 
-				-- Get player's team color
-				local _, _, _, teamID = spFunc.GetPlayerInfo(interactionState.trackingPlayerID, false)
-				if teamID then
-					local r, g, b = Spring.GetTeamColor(teamID)
-					-- Scale cursor size: larger at low zoom, stays reasonable at high zoom
-					local cursorSize = render.vsy * 0.0073
-					Spring.Echo()
-					-- Draw crosshair lines to PIP boundaries (stop at cursor edge)
-					--glFunc.Color(r*1.5+0.5, g*1.5+0.5, b*1.5+0.5, 0.08)
-					--glFunc.LineWidth(render.vsy / 600)
-					-- glFunc.BeginEnd(glConst.LINES, function()
-					-- 	-- Horizontal line (left to cursor)
-					-- 	glFunc.Vertex(0, cy)
-					-- 	glFunc.Vertex(cx - cursorSize, cy)
-					-- 	-- Horizontal line (cursor to right)
-					-- 	glFunc.Vertex(cx + cursorSize, cy)
-					-- 	glFunc.Vertex(render.dim.r - render.dim.l, cy)
-					-- 	-- Vertical line (bottom to cursor)
-					-- 	glFunc.Vertex(cx, 0)
-					-- 	glFunc.Vertex(cx, cy - cursorSize)
-					-- 	-- Vertical line (cursor to top)
-					-- 	glFunc.Vertex(cx, cy + cursorSize)
-					-- 	glFunc.Vertex(cx, render.dim.t - render.dim.b)
-					-- end)
+				-- Draw cursor as broken circle (4 arcs with 4 gaps)
+				-- Each arc is 1/8 of circle, each gap is 1/8 of circle
+				-- Arcs centered at top (90°), right (0°), bottom (270°), left (180°)
+				local segments = 24
+				local pi = math.pi
 
-					-- Draw cursor as broken circle (4 arcs with 4 gaps)
-					-- Each arc is 1/8 of circle, each gap is 1/8 of circle
-					-- Arcs centered at top (90°), right (0°), bottom (270°), left (180°)
-					local segments = 24
-					local pi = math.pi
+				-- Define 4 arcs: each arc is 45° (pi/4), centered at cardinal directions
+				local arcs = {
+					{pi/2 - pi/8, pi/2 + pi/8},      -- Top arc (centered at 90°)
+					{0 - pi/8, 0 + pi/8},             -- Right arc (centered at 0°)
+					{3*pi/2 - pi/8, 3*pi/2 + pi/8},  -- Bottom arc (centered at 270°)
+					{pi - pi/8, pi + pi/8}            -- Left arc (centered at 180°)
+				}
 
-					-- Define 4 arcs: each arc is 45° (pi/4), centered at cardinal directions
-					local arcs = {
-						{pi/2 - pi/8, pi/2 + pi/8},      -- Top arc (centered at 90°)
-						{0 - pi/8, 0 + pi/8},             -- Right arc (centered at 0°)
-						{3*pi/2 - pi/8, 3*pi/2 + pi/8},  -- Bottom arc (centered at 270°)
-						{pi - pi/8, pi + pi/8}            -- Left arc (centered at 180°)
-					}
-
-					-- Draw black outline first (thicker)
-					glFunc.Color(0, 0, 0, 0.66)
-					glFunc.LineWidth(render.vsy / 500 + 2)
-					for _, arc in ipairs(arcs) do
-						glFunc.BeginEnd(GL.LINE_STRIP, function()
-							local startAngle, endAngle = arc[1], arc[2]
-							local arcSegments = math.floor(segments / 8) -- 1/8 of circle for each arc
-							for i = 0, arcSegments do
-								local t = i / arcSegments
-								local angle = startAngle + (endAngle - startAngle) * t
-								local x = cx + math.cos(angle) * cursorSize
-								local y = cy + math.sin(angle) * cursorSize
-								glFunc.Vertex(x, y)
-							end
-						end)
-					end
-
-					-- Draw colored arcs on top
-					glFunc.Color((r*1.3)+0.66, (g*1.3)+0.66, (b*1.3)+0.66, 1)
-					glFunc.LineWidth(render.vsy / 500)
-					for _, arc in ipairs(arcs) do
-						glFunc.BeginEnd(GL.LINE_STRIP, function()
-							local startAngle, endAngle = arc[1], arc[2]
-							local arcSegments = math.floor(segments / 8) -- 1/8 of circle for each arc
-							for i = 0, arcSegments do
-								local t = i / arcSegments
-								local angle = startAngle + (endAngle - startAngle) * t
-								local x = cx + math.cos(angle) * cursorSize
-								local y = cy + math.sin(angle) * cursorSize
-								glFunc.Vertex(x, y)
-							end
-						end)
-					end
-					glFunc.LineWidth(1.0)
+				-- Draw black outline first (thicker)
+				glFunc.Color(0, 0, 0, 0.66)
+				glFunc.LineWidth((render.vsy / 500 + 2) * resScale)
+				for _, arc in ipairs(arcs) do
+					glFunc.BeginEnd(GL.LINE_STRIP, function()
+						local startAngle, endAngle = arc[1], arc[2]
+						local arcSegments = math.floor(segments / 8) -- 1/8 of circle for each arc
+						for i = 0, arcSegments do
+							local t = i / arcSegments
+							local angle = startAngle + (endAngle - startAngle) * t
+							local x = cx + math.cos(angle) * cursorSize
+							local y = cy + math.sin(angle) * cursorSize
+							glFunc.Vertex(x, y)
+						end
+					end)
 				end
+
+				-- Draw colored arcs on top
+				glFunc.Color((r*1.3)+0.66, (g*1.3)+0.66, (b*1.3)+0.66, 1)
+				glFunc.LineWidth((render.vsy / 500) * resScale)
+				for _, arc in ipairs(arcs) do
+					glFunc.BeginEnd(GL.LINE_STRIP, function()
+						local startAngle, endAngle = arc[1], arc[2]
+						local arcSegments = math.floor(segments / 8) -- 1/8 of circle for each arc
+						for i = 0, arcSegments do
+							local t = i / arcSegments
+							local angle = startAngle + (endAngle - startAngle) * t
+							local x = cx + math.cos(angle) * cursorSize
+							local y = cy + math.sin(angle) * cursorSize
+							glFunc.Vertex(x, y)
+						end
+					end)
+				end
+				glFunc.LineWidth(1.0)
 			end
 		end
+	end
 
-		-- Draw build previews
-		local mx, my = spFunc.GetMouseState()
-		DrawBuildPreview(mx, my, iconRadiusZoomDistMult)
-		DrawBuildDragPreview(iconRadiusZoomDistMult)
-		DrawQueuedBuilds(iconRadiusZoomDistMult, cachedSelectedUnits)
+	-- Draw build previews
+	local mx, my = spFunc.GetMouseState()
+	DrawBuildPreview(mx, my, iconRadiusZoomDistMult)
+	DrawBuildDragPreview(iconRadiusZoomDistMult)
+	DrawQueuedBuilds(iconRadiusZoomDistMult, cachedSelectedUnits)
 
-		glFunc.LineWidth(1.0)
-		gl.Scissor(false)
+	glFunc.LineWidth(1.0)
+	gl.Scissor(false)
 end
 
 -- Helper function to render PIP frame background (static)
@@ -5906,7 +8608,22 @@ local function RenderFrameBackground()
 	local pipWidth = render.dim.r - render.dim.l
 	local pipHeight = render.dim.t - render.dim.b
 	glFunc.Color(0.6,0.6,0.6,0.6)
-	render.RectRound(0, 0, pipWidth, pipHeight, render.elementCorner*0.4, 1, 1, 1, 1)
+	
+	-- Determine which corners to round based on screen edge proximity
+	-- Corners at screen edges should be sharp (0), others rounded (1)
+	local edgeTolerance = 2  -- Pixels from edge to consider "at edge"
+	local atLeft = render.dim.l <= edgeTolerance
+	local atRight = render.dim.r >= render.vsx - edgeTolerance
+	local atBottom = render.dim.b <= edgeTolerance
+	local atTop = render.dim.t >= render.vsy - edgeTolerance
+	
+	-- RectRound params: tl, tr, br, bl (top-left, top-right, bottom-right, bottom-left)
+	local tl = (atLeft or atTop) and 0 or 1
+	local tr = (atRight or atTop) and 0 or 1
+	local br = (atRight or atBottom) and 0 or 1
+	local bl = (atLeft or atBottom) and 0 or 1
+	
+	render.RectRound(0, 0, pipWidth, pipHeight, render.elementCorner*0.4, tl, tr, br, bl)
 end
 
 -- Helper function to calculate maximize icon rotation angle based on expansion direction
@@ -5914,7 +8631,7 @@ local function GetMaximizeIconRotation()
 	-- Determine expansion direction based on current or minimize button position
 	local sw, sh = Spring.GetWindowGeometry()
 	local posL, posB
-
+	
 	-- Use current position when maximized (for minimize button rotation during drag/resize)
 	-- Use minMode position when minimized (for maximize button rotation)
 	if uiState.inMinMode then
@@ -5934,10 +8651,10 @@ local function GetMaximizeIconRotation()
 			posB = render.dim.t - buttonSize
 		end
 	end
-
+	
 	local onLeftSide = (posL and posL < sw * 0.5)
 	local onBottomSide = (posB and posB < sh * 0.25)
-
+	
 	-- Default icon points to bottom-left, rotate to point toward expansion:
 	if onLeftSide and onBottomSide then
 		return 180  -- Bottom-left: expands toward top-right
@@ -5952,6 +8669,11 @@ end
 
 -- Helper function to render PIP frame buttons without hover effects
 local function RenderFrameButtons()
+	-- In minimap mode, don't render buttons at all (no minimize, no resize handle)
+	if isMinimapMode and config.minimapModeShowButtons == false then
+		return
+	end
+
 	local usedButtonSizeLocal = render.usedButtonSize
 	local pipWidth = render.dim.r - render.dim.l
 	local pipHeight = render.dim.t - render.dim.b
@@ -5961,35 +8683,39 @@ local function RenderFrameButtons()
 		return
 	end
 
-	-- Resize handle (bottom-right corner)
-	glFunc.Color(config.panelBorderColorDark)
-	glFunc.LineWidth(1.0)
-	glFunc.BeginEnd(glConst.TRIANGLES, function()
-		-- Relative coordinates for resize handle
-		glFunc.Vertex(pipWidth - usedButtonSizeLocal, 0)
-		glFunc.Vertex(pipWidth, 0)
-		glFunc.Vertex(pipWidth, usedButtonSizeLocal)
-	end)
+	-- Resize handle (bottom-right corner) - hide in minimap mode if configured
+	if not (isMinimapMode and config.minimapModeHideMoveResize) then
+		glFunc.Color(config.panelBorderColorDark)
+		glFunc.LineWidth(1.0)
+		glFunc.BeginEnd(glConst.TRIANGLES, function()
+			-- Relative coordinates for resize handle
+			glFunc.Vertex(pipWidth - usedButtonSizeLocal, 0)
+			glFunc.Vertex(pipWidth, 0)
+			glFunc.Vertex(pipWidth, usedButtonSizeLocal)
+		end)
+	end
 
-	-- Minimize button (top-right)
-	glFunc.Color(config.panelBorderColorDark)
-	glFunc.Texture(false)
-	render.RectRound(pipWidth - usedButtonSizeLocal - render.elementPadding, pipHeight - usedButtonSizeLocal - render.elementPadding, pipWidth, pipHeight, render.elementCorner*0.65, 0, 0, 0, 1)
-	glFunc.Color(config.panelBorderColorLight)
-	glFunc.Texture('LuaUI/Images/pip/PipShrink.png')
-
-	-- Rotate icon to point toward shrink position (opposite of expand direction)
-	local rotation = GetMaximizeIconRotation()
-	local centerX = pipWidth - usedButtonSizeLocal * 0.5
-	local centerY = pipHeight - usedButtonSizeLocal * 0.5
-	glFunc.PushMatrix()
-	glFunc.Translate(centerX, centerY, 0)
-	glFunc.Rotate(rotation, 0, 0, 1)
-	glFunc.Translate(-centerX, -centerY, 0)
-
-	glFunc.TexRect(pipWidth - usedButtonSizeLocal, pipHeight - usedButtonSizeLocal, pipWidth, pipHeight)
-	glFunc.PopMatrix()
-	glFunc.Texture(false)
+	-- Minimize button (top-right) - hide in minimap mode
+	if not isMinimapMode then
+		glFunc.Color(config.panelBorderColorDark)
+		glFunc.Texture(false)
+		render.RectRound(pipWidth - usedButtonSizeLocal - render.elementPadding, pipHeight - usedButtonSizeLocal - render.elementPadding, pipWidth, pipHeight, render.elementCorner*0.65, 0, 0, 0, 1)
+		glFunc.Color(config.panelBorderColorLight)
+		glFunc.Texture('LuaUI/Images/pip/PipShrink.png')
+		
+		-- Rotate icon to point toward shrink position (opposite of expand direction)
+		local rotation = GetMaximizeIconRotation()
+		local centerX = pipWidth - usedButtonSizeLocal * 0.5
+		local centerY = pipHeight - usedButtonSizeLocal * 0.5
+		glFunc.PushMatrix()
+		glFunc.Translate(centerX, centerY, 0)
+		glFunc.Rotate(rotation, 0, 0, 1)
+		glFunc.Translate(-centerX, -centerY, 0)
+		
+		glFunc.TexRect(pipWidth - usedButtonSizeLocal, pipHeight - usedButtonSizeLocal, pipWidth, pipHeight)
+		glFunc.PopMatrix()
+		glFunc.Texture(false)
+	end
 
 	-- Bottom-left buttons
 	local selectedUnits = Spring.GetSelectedUnits()
@@ -6002,23 +8728,50 @@ local function RenderFrameButtons()
 	local showPlayerTrackButton = isTrackingPlayer or spec or (#aliveTeammates > 0)
 	local visibleButtons = {}
 	for i = 1, #buttons do
-		-- Show pip_track button if has selection or is tracking units
-		if buttons[i].command == 'pip_track' then
-			if hasSelection or isTracking then
-				visibleButtons[#visibleButtons + 1] = buttons[i]
+		local btn = buttons[i]
+		-- In minimap mode, hide move button if configured
+		local skipButton = false
+		if isMinimapMode and config.minimapModeHideMoveResize then
+			-- Skip move button (no command, has PipMove texture)
+			if btn.tooltipKey == 'ui.pip.move' then
+				skipButton = true
 			end
-		-- Show pip_trackplayer button if lockcamera is available or already tracking
-		elseif buttons[i].command == 'pip_trackplayer' then
-			if showPlayerTrackButton then
-				visibleButtons[#visibleButtons + 1] = buttons[i]
+		end
+		
+		if not skipButton then
+			-- In minimap mode, skip switch and copy buttons (keep pip_track and pip_trackplayer)
+			-- Allow pip_view for spectators with fullview
+			if isMinimapMode then
+				if btn.command == 'pip_switch' or btn.command == 'pip_copy' then
+					skipButton = true
+				elseif btn.command == 'pip_view' then
+					local _, fullview = Spring.GetSpectatingState()
+					if not fullview then
+						skipButton = true
+					end
+				end
 			end
-		-- Show pip_view button only for spectators
-		elseif buttons[i].command == 'pip_view' then
-			if showPlayerTrackButton then
-				visibleButtons[#visibleButtons + 1] = buttons[i]
+		end
+		
+		if not skipButton then
+			-- Show pip_track button if has selection or is tracking units
+			if btn.command == 'pip_track' then
+				if hasSelection or isTracking then
+					visibleButtons[#visibleButtons + 1] = btn
+				end
+			-- Show pip_trackplayer button if lockcamera is available or already tracking
+			elseif btn.command == 'pip_trackplayer' then
+				if showPlayerTrackButton then
+					visibleButtons[#visibleButtons + 1] = btn
+				end
+			-- Show pip_view button only for spectators
+			elseif btn.command == 'pip_view' then
+				if showPlayerTrackButton then
+					visibleButtons[#visibleButtons + 1] = btn
+				end
+			else
+				visibleButtons[#visibleButtons + 1] = btn
 			end
-		else
-			visibleButtons[#visibleButtons + 1] = buttons[i]
 		end
 	end
 
@@ -6032,7 +8785,7 @@ local function RenderFrameButtons()
 		local isActive = (visibleButtons[i].command == 'pip_track' and interactionState.areTracking) or
 		                 (visibleButtons[i].command == 'pip_trackplayer' and interactionState.trackingPlayerID) or
 		                 (visibleButtons[i].command == 'pip_view' and state.losViewEnabled)
-
+		
 		if isActive then
 			glFunc.Color(config.panelBorderColorLight)
 			glFunc.Texture(false)
@@ -6092,38 +8845,50 @@ local function ShouldShowLOS()
 	return false, nil
 end
 
+-- Helper function to get the normalized water/lava threshold for the heightmap shader
+-- Returns a value in [0, 1] where 0 = min ground height, 1 = max ground height
+local function GetWaterLevel()
+	return mapInfo.dynamicWaterLevel or 0
+end
+
 -- Helper function to draw water and LOS overlays
 local function DrawWaterAndLOSOverlays()
+	
 	-- Draw water overlay using shader
-	if mapInfo.hasWater and waterShader and not mapInfo.voidWater then
+	if mapInfo.hasWater and waterShader then
 		gl.UseShader(waterShader)
-
-		-- Set water color based on lava/water
+		
+		-- Set water color based on lava/water/void
 		local r, g, b, a
-		if mapInfo.isLava then
+		if mapInfo.voidWater then
+			r, g, b, a = 0, 0, 0, 1
+		elseif mapInfo.isLava then
 			r, g, b, a = 0.22, 0, 0, 1
 		else
 			r, g, b, a = 0.08, 0.11, 0.22, 0.5
 		end
 		gl.UniformFloat(gl.GetUniformLocation(waterShader, "waterColor"), r, g, b, a)
-
+		gl.UniformFloat(gl.GetUniformLocation(waterShader, "waterLevel"), GetWaterLevel())
+		
 		-- Bind heightmap texture
 		gl.UniformInt(gl.GetUniformLocation(waterShader, "heightTex"), 0)
 		glFunc.Texture(0, '$heightmap')
-
+		
 		-- Draw water overlay
 		glFunc.Color(1, 1, 1, 1)
 		glFunc.BeginEnd(glConst.QUADS, GroundTextureVertices)
-
+		
 		glFunc.Texture(0, false)
 		gl.UseShader(0)
 	end
 
-	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)  -- Restore default blending
+	-- Restore separate blend for alpha (maintains correct alpha accumulation in R2T FBOs)
+	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+	gl.BlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA)
 
 	-- Draw LOS darkening overlay
 	local shouldShowLOS, losAllyTeam = ShouldShowLOS()
-	if config.showLosOverlay and shouldShowLOS and pipR2T.losTex then
+	if config.showLosOverlay and shouldShowLOS and pipR2T.losTex and gameHasStarted then
 		-- Only use scissor test if not rotated (scissor doesn't work with rotation)
 		if render.minimapRotation == 0 then
 			-- Calculate scissor coordinates to only show the visible map portion
@@ -6152,8 +8917,10 @@ local function DrawWaterAndLOSOverlays()
 		end)
 
 		glFunc.Texture(false)
-		gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)  -- Restore default blending
-
+		-- Restore separate blend for alpha (maintains correct alpha accumulation in R2T FBOs)
+		gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+		gl.BlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA)
+		
 		if render.minimapRotation == 0 then
 			gl.Scissor(false)  -- Disable scissor test
 		end
@@ -6165,26 +8932,27 @@ local function DrawMapMarkers()
 	if #miscState.mapMarkers == 0 then
 		return
 	end
-
+	
 	-- Check if LOS view is limited and get the visible allyteam
 	local shouldShowLOS, losAllyTeam = ShouldShowLOS()
 	local filterByAllyTeam = shouldShowLOS and losAllyTeam ~= nil
-
+	
 	local currentTime = os.clock()
-	local lineSize = math.floor(4 * render.widgetScale)
+	local resScale = render.contentScale or 1
+	local lineSize = math.floor(4 * render.widgetScale * resScale)
 	-- Scale baseSize based on zoom level (more zoomed out = slightly smaller markers)
 	local zoomScale = 0.45 + (cameraState.zoom * 0.66)  -- Scale between 0.7 and 1.0
-	local baseSize = 45 * render.widgetScale * zoomScale
-
+	local baseSize = 45 * render.widgetScale * zoomScale * resScale
+				
 	glFunc.Texture(false)
-
+	
 	-- Remove expired markers and draw active ones
 	local i = 1
 	while i <= #miscState.mapMarkers do
 		local marker = miscState.mapMarkers[i]
 		local age = currentTime - marker.time
-
-		if age > 4.5 then
+		
+		if age > 5 or (marker.fadeStart and (currentTime - marker.fadeStart) > 0.5) then
 			table.remove(miscState.mapMarkers, i)
 		else
 			-- Filter markers by allyteam if LOS view is limited
@@ -6193,30 +8961,41 @@ local function DrawMapMarkers()
 				local markerAllyTeam = Spring.GetTeamAllyTeamID(marker.teamID)
 				shouldDraw = (markerAllyTeam == losAllyTeam)
 			end
-
+			
 			if shouldDraw then
 				-- Draw marker if it's within the visible area (with margin for edge visibility)
 				local sx, sy = WorldToPipCoords(marker.x, marker.z)
-
+				
 				-- Expand bounds check to include margin outside the PIP for edge markers
 				local edgeMargin = (baseSize*1.25) * render.widgetScale
 				if sx >= render.dim.l - edgeMargin and sx <= render.dim.r + edgeMargin and sy >= render.dim.b - edgeMargin and sy <= render.dim.t + edgeMargin then
 				-- Calculate rotation based on time (rotate at 180 degrees per second)
 				local rotation = (age * 180) % 360
-
+				
 				-- Size of the rectangle (in screen pixels) with pulsating scale
+				-- Start very large and quickly shrink to normal size, then pulsate
+				local burstScale = 1 + 9 * math.max(0, 1 - age * 1.33)^2  -- 10x size at t=0, settles to 1x by ~0.77s
 				local pulseScale = 1 + math.sin(age * 4.5) * 0.2  -- Pulsate between 0.8 and 1.2
-				local size = baseSize * pulseScale
-
-				-- Fade out over the last second
-				local alpha = age < 2.5 and 1 or (1 - (age - 2.5))
-
-				-- Use team color or default
+				local size = baseSize * pulseScale * burstScale
+				
+				-- Fade out: normal fade in last 2s, or quick fade if superseded by nearby marker
+				local alpha
+				if marker.fadeStart then
+					local fadeDur = 0.5
+					local fadeAge = currentTime - marker.fadeStart
+					alpha = math.max(0, 1 - fadeAge / fadeDur)
+				else
+					alpha = age < 3 and 1 or (1 - (age - 3) / 2.6)
+				end
+				
+				-- Use team color, white for spectators, or default yellow
 				local r, g, b = 1, 1, 0  -- Default yellow
-				if marker.teamID then
+				if marker.isSpectator then
+					r, g, b = 1, 1, 1  -- White for spectators
+				elseif marker.teamID then
 					r, g, b = Spring.GetTeamColor(marker.teamID)
 				end
-
+				
 				-- Draw rotating rectangle
 				glFunc.PushMatrix()
 				glFunc.Translate(sx, sy, 0)
@@ -6224,7 +9003,7 @@ local function DrawMapMarkers()
 
 				-- background
 				glFunc.Color(0, 0, 0, alpha * 0.5)
-				glFunc.LineWidth(lineSize+2)
+				glFunc.LineWidth(lineSize+2.5)
 				gl.BeginEnd(GL.LINE_LOOP, function()
 					glFunc.Vertex(-size, -size)
 					glFunc.Vertex(size, -size)
@@ -6232,8 +9011,8 @@ local function DrawMapMarkers()
 					glFunc.Vertex(-size, size)
 				end)
 				-- colored
-				local addition = 2 * (pulseScale-0.9)
-				glFunc.Color(r*1.2 + addition, g*1.2 + addition, b*1.2 + addition, alpha)
+				local addition = 1.4 * (pulseScale-0.9)
+				glFunc.Color(r*1.15 + addition, g*1.15 + addition, b*1.15 + addition, alpha)
 				glFunc.LineWidth(lineSize)
 				gl.BeginEnd(GL.LINE_LOOP, function()
 					glFunc.Vertex(-size, -size)
@@ -6241,15 +9020,15 @@ local function DrawMapMarkers()
 					glFunc.Vertex(size, size)
 					glFunc.Vertex(-size, size)
 				end)
-
+				
 				glFunc.PopMatrix()
 			end
 			end  -- end if shouldDraw
-
+			
 			i = i + 1
 		end
 	end
-
+	
 	glFunc.LineWidth(1.0)
 	glFunc.Color(1, 1, 1, 1)
 end
@@ -6304,9 +9083,10 @@ local function DrawBuildCursorWithRotation()
 	if cache.unitIcon[buildDefID] then
 		local iconData = cache.unitIcon[buildDefID]
 		local texture = iconData.bitmap
-		local distMult = math.min(math.max(1, 2.2-(cameraState.zoom*3.3)), 3)
-		local iconRadiusZoom = config.iconRadius * cameraState.zoom
-		local iconSize = iconRadiusZoom * distMult * iconData.size
+		-- Engine-matching icon size (same as GL4DrawIcons/DrawIcons)
+		local resScale = render.contentScale or 1
+		local unitBaseSize = Spring.GetConfigFloat("MinimapIconScale", 3.5)
+		local iconSize = unitBaseSize * (mapInfo.mapSizeX * mapInfo.mapSizeZ / 40000) ^ 0.25 * math.sqrt(cameraState.zoom) * resScale * iconData.size
 		local sx, sy = WorldToPipCoords(wx, wz)
 
 		-- Counter-rotate icon to keep it upright
@@ -6392,18 +9172,476 @@ local function DrawBuildCursorWithRotation()
 
 	glFunc.LineWidth(1.0)
 	glFunc.Color(1, 1, 1, 1)
-
+	
 	-- Pop rotation matrix
 	if render.minimapRotation ~= 0 then
 		glFunc.PopMatrix()
 	end
 end
 
-local function RenderPipContents()
-	-- Cache selected units once per render cycle to avoid multiple API calls
-	local cachedSelectedUnits = Spring.GetSelectedUnits()
+-- Draw the main camera's view boundaries on the PIP (for minimap mode)
+local function DrawCameraViewBounds()
+	-- Only draw in minimap mode when not tracking a player camera
+	if not isMinimapMode or interactionState.trackingPlayerID then
+		return
+	end
+	
+	-- Get screen dimensions
+	local vsx, vsy = Spring.GetViewGeometry()
+	
+	-- Get camera position for ray origin
+	local camX, camY, camZ = Spring.GetCameraPosition()
+	
+	-- Get camera look-at ground height for a flat reference plane
+	-- Use ground height at the camera's XZ position (clamped to map) for a reasonable estimate
+	local lookX = math.max(0, math.min(camX, Game.mapSizeX))
+	local lookZ = math.max(0, math.min(camZ, Game.mapSizeZ))
+	local groundY = spFunc.GetGroundHeight(lookX, lookZ) or 0
+	if groundY < 0 then groundY = 0 end
+	
+	-- Helper function to intersect a screen pixel ray with a flat plane at groundY
+	-- Gives correct scale without terrain-induced skewing, works off-map
+	local function screenToGround(sx, sy)
+		local dirX, dirY, dirZ = Spring.GetPixelDir(sx, sy)
+		
+		if dirY >= 0 then
+			local farDist = 50000
+			return camX + dirX * farDist, camZ + dirZ * farDist
+		end
+		
+		local t = -(camY - groundY) / dirY
+		if t < 0 then
+			local farDist = 50000
+			return camX + dirX * farDist, camZ + dirZ * farDist
+		end
+		
+		return camX + dirX * t, camZ + dirZ * t
+	end
+	
+	-- Use inset from edges to avoid issues at exact corners
+	local inset = 1
+	
+	-- Get world coordinates for all 4 screen corners by tracing against terrain
+	local bottomLeftX, bottomLeftZ = screenToGround(inset, inset)
+	local bottomRightX, bottomRightZ = screenToGround(vsx - inset, inset)
+	local topRightX, topRightZ = screenToGround(vsx - inset, vsy - inset)
+	local topLeftX, topLeftZ = screenToGround(inset, vsy - inset)
+	
+	-- Don't clamp to map bounds - let the view representation extend off the map
+	-- This fixes the "sticking to edges" issue
+	
+	-- Convert to pip coordinates (no clamping, preserve true perspective shape)
+	-- Note: World Z maps to pip Y inversely (high Z = low Y in pip view)
+	-- Round to nearest pixel to eliminate sub-pixel jitter when the camera moves
+	local bl_x, bl_y = WorldToPipCoords(bottomLeftX, bottomLeftZ)
+	local br_x, br_y = WorldToPipCoords(bottomRightX, bottomRightZ)
+	local tr_x, tr_y = WorldToPipCoords(topRightX, topRightZ)
+	local tl_x, tl_y = WorldToPipCoords(topLeftX, topLeftZ)
+	bl_x = math.floor(bl_x + 0.5);  bl_y = math.floor(bl_y + 0.5)
+	br_x = math.floor(br_x + 0.5);  br_y = math.floor(br_y + 0.5)
+	tr_x = math.floor(tr_x + 0.5);  tr_y = math.floor(tr_y + 0.5)
+	tl_x = math.floor(tl_x + 0.5);  tl_y = math.floor(tl_y + 0.5)
+	
+	-- Calculate chamfer size (4 pixels at 1080p, scaled by resolution)
+	local resScale = render.contentScale or 1
+	local chamfer = 2.5 * (render.vsy / 1080) * resScale
+	
+	-- Calculate chamfer offsets for each corner
+	-- Always apply chamfers regardless of position
+	local function getChamferVertices(x1, y1, x2, y2, cornerX, cornerY)
+		-- Get direction vectors from corner to adjacent points
+		local dx1, dy1 = x1 - cornerX, y1 - cornerY
+		local dx2, dy2 = x2 - cornerX, y2 - cornerY
+		
+		-- Normalize and scale by chamfer size
+		local len1 = math.sqrt(dx1*dx1 + dy1*dy1)
+		local len2 = math.sqrt(dx2*dx2 + dy2*dy2)
+		
+		if len1 < 0.001 or len2 < 0.001 then
+			return cornerX, cornerY, cornerX, cornerY
+		end
+		
+		-- Chamfer points along each edge from the corner
+		local c1x = cornerX + (dx1 / len1) * chamfer
+		local c1y = cornerY + (dy1 / len1) * chamfer
+		local c2x = cornerX + (dx2 / len2) * chamfer
+		local c2y = cornerY + (dy2 / len2) * chamfer
+		
+		return c1x, c1y, c2x, c2y
+	end
+	
+	-- Get chamfered vertices for each corner (going clockwise from bottom-left)
+	local bl_c1x, bl_c1y, bl_c2x, bl_c2y = getChamferVertices(tl_x, tl_y, br_x, br_y, bl_x, bl_y)
+	local br_c1x, br_c1y, br_c2x, br_c2y = getChamferVertices(bl_x, bl_y, tr_x, tr_y, br_x, br_y)
+	local tr_c1x, tr_c1y, tr_c2x, tr_c2y = getChamferVertices(br_x, br_y, tl_x, tl_y, tr_x, tr_y)
+	local tl_c1x, tl_c1y, tl_c2x, tl_c2y = getChamferVertices(tr_x, tr_y, bl_x, bl_y, tl_x, tl_y)
+	
+	-- Draw the view trapezoid with chamfered corners (anti-aliased)
+	glFunc.Texture(false)
+	
+	gl.UnsafeState(GL_LINE_SMOOTH, function()
+		gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+		
+		-- Draw dark shadow outline first (thicker, behind the white line)
+		glFunc.LineWidth(3 * ((vsx+1000) / 3000) * resScale)
+		glFunc.Color(0, 0, 0, 0.35)
+		glFunc.BeginEnd(glConst.LINE_LOOP, function()
+			-- Bottom-left corner (2 vertices)
+			glFunc.Vertex(bl_c1x, bl_c1y)  -- toward top-left
+			glFunc.Vertex(bl_c2x, bl_c2y)  -- toward bottom-right
+			-- Bottom-right corner (2 vertices)
+			glFunc.Vertex(br_c1x, br_c1y)  -- toward bottom-left
+			glFunc.Vertex(br_c2x, br_c2y)  -- toward top-right
+			-- Top-right corner (2 vertices)
+			glFunc.Vertex(tr_c1x, tr_c1y)  -- toward bottom-right
+			glFunc.Vertex(tr_c2x, tr_c2y)  -- toward top-left
+			-- Top-left corner (2 vertices)
+			glFunc.Vertex(tl_c1x, tl_c1y)  -- toward top-right
+			glFunc.Vertex(tl_c2x, tl_c2y)  -- toward bottom-left
+		end)
+		
+		-- Draw white line on top
+		glFunc.LineWidth(1.3 * ((vsx+1000) / 3000) * resScale)
+		glFunc.Color(1, 1, 1, 0.8)
+		glFunc.BeginEnd(glConst.LINE_LOOP, function()
+			-- Bottom-left corner (2 vertices)
+			glFunc.Vertex(bl_c1x, bl_c1y)
+			glFunc.Vertex(bl_c2x, bl_c2y)
+			-- Bottom-right corner (2 vertices)
+			glFunc.Vertex(br_c1x, br_c1y)
+			glFunc.Vertex(br_c2x, br_c2y)
+			-- Top-right corner (2 vertices)
+			glFunc.Vertex(tr_c1x, tr_c1y)
+			glFunc.Vertex(tr_c2x, tr_c2y)
+			-- Top-left corner (2 vertices)
+			glFunc.Vertex(tl_c1x, tl_c1y)
+			glFunc.Vertex(tl_c2x, tl_c2y)
+		end)
+	end)
+	
+	glFunc.LineWidth(1.0)
+end
 
-	-- Apply rotation to all content if minimap is rotated
+
+-- Update map ruler texture (must be called OUTSIDE of R2T context)
+local function UpdateMapRulerTexture()
+	if not gl.R2tHelper then
+		return
+	end
+	
+	-- Calculate ruler mark size
+	local markSize = math.ceil(3 * (render.vsy / 2000))
+	
+	-- Generate cache key with rounding to avoid tiny changes triggering regeneration
+	-- Round world coordinates to nearest 10 units and screen dimensions to nearest 5 pixels
+	local cacheKey = string.format("%d_%d_%d_%d_%d_%d_%d_%d_%d",
+		math.floor(render.world.l / 3) * 3,
+		math.floor(render.world.r / 3) * 3,
+		math.floor(render.world.t / 3) * 3,
+		math.floor(render.world.b / 3) * 3,
+		math.floor(render.dim.l / 3) * 3,
+		math.floor(render.dim.r / 3) * 3,
+		math.floor(render.dim.b / 3) * 3,
+		math.floor(render.dim.t / 3) * 3,
+		markSize)
+	
+	-- Check if texture needs regeneration
+	if pipR2T.rulerCacheKey ~= cacheKey then
+		pipR2T.rulerNeedsUpdate = true
+		pipR2T.rulerCacheKey = cacheKey
+	end
+	
+	-- Create/update texture if needed
+	if not pipR2T.rulerNeedsUpdate then
+		return
+	end
+	
+	local pipWidth = render.dim.r - render.dim.l
+	local pipHeight = render.dim.t - render.dim.b
+		
+		if not pipR2T.rulerTex or math.floor(pipWidth) ~= pipR2T.rulerLastWidth or math.floor(pipHeight) ~= pipR2T.rulerLastHeight then
+			if pipR2T.rulerTex then
+				gl.DeleteTexture(pipR2T.rulerTex)
+			end
+			pipR2T.rulerTex = gl.CreateTexture(math.floor(pipWidth), math.floor(pipHeight), {
+				target = GL.TEXTURE_2D, format = GL.RGBA, fbo = true,
+			})
+			pipR2T.rulerLastWidth = math.floor(pipWidth)
+			pipR2T.rulerLastHeight = math.floor(pipHeight)
+		end
+		
+		if pipR2T.rulerTex then
+			gl.R2tHelper.RenderToTexture(pipR2T.rulerTex, function()
+				glFunc.Translate(-1, -1, 0)
+				glFunc.Scale(2 / pipWidth, 2 / pipHeight, 0)
+				
+				-- Create reusable mark pattern display lists if not exist or size changed
+				if not render.mapRulerMarkDlists.horizontal or render.mapRulerLastMarkSize ~= markSize then
+					-- Clean up old display lists
+					if render.mapRulerMarkDlists.horizontal then
+						for _, dlist in pairs(render.mapRulerMarkDlists.horizontal) do
+							gl.DeleteList(dlist)
+						end
+						for _, dlist in pairs(render.mapRulerMarkDlists.vertical) do
+							gl.DeleteList(dlist)
+						end
+					end
+					
+					render.mapRulerMarkDlists.horizontal = {}
+					render.mapRulerMarkDlists.vertical = {}
+					
+					-- Create horizontal marks (top/bottom edges) - centered at origin
+					for i, mult in ipairs({1, 2, 3}) do
+						local length = markSize * mult
+						-- Top mark (extends downward from 0)
+						render.mapRulerMarkDlists.horizontal["top" .. i] = gl.CreateList(function()
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.Vertex(-markSize/2, -length)
+								glFunc.Vertex(markSize/2, -length)
+								glFunc.Vertex(markSize/2, 0)
+								glFunc.Vertex(-markSize/2, 0)
+							end)
+						end)
+						-- Bottom mark (extends upward from 0)
+						render.mapRulerMarkDlists.horizontal["bottom" .. i] = gl.CreateList(function()
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.Vertex(-markSize/2, 0)
+								glFunc.Vertex(markSize/2, 0)
+								glFunc.Vertex(markSize/2, length)
+								glFunc.Vertex(-markSize/2, length)
+							end)
+						end)
+					end
+					
+					-- Create vertical marks (left/right edges) - centered at origin
+					for i, mult in ipairs({1, 2, 3}) do
+						local length = markSize * mult
+						-- Left mark (extends rightward from 0)
+						render.mapRulerMarkDlists.vertical["left" .. i] = gl.CreateList(function()
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.Vertex(0, -markSize/2)
+								glFunc.Vertex(length, -markSize/2)
+								glFunc.Vertex(length, markSize/2)
+								glFunc.Vertex(0, markSize/2)
+							end)
+						end)
+						-- Right mark (extends leftward from 0)
+						render.mapRulerMarkDlists.vertical["right" .. i] = gl.CreateList(function()
+							glFunc.BeginEnd(glConst.QUADS, function()
+								glFunc.Vertex(-length, -markSize/2)
+								glFunc.Vertex(0, -markSize/2)
+								glFunc.Vertex(0, markSize/2)
+								glFunc.Vertex(-length, markSize/2)
+							end)
+						end)
+					end
+					
+					render.mapRulerLastMarkSize = markSize
+				end
+				
+				-- Use fixed ruler spacing
+				local smallestSpacing = 64
+				local mediumSpacing = smallestSpacing * 4  -- 256
+				local largestSpacing = smallestSpacing * 16  -- 1024
+
+				-- Get rotation in degrees (0-360)
+				local rotDeg = 0
+				if render.minimapRotation then
+					rotDeg = (render.minimapRotation * 180 / math.pi) % 360
+				end
+				
+				-- Determine which world axis maps to screen horizontal/vertical and in which direction
+				-- Screen Y increases upward, world Z increases downward (south)
+				-- Screen X increases rightward, world X increases rightward (east)
+				local horizWorldL, horizWorldR  -- World coords at screen left and right
+				local vertWorldB, vertWorldT    -- World coords at screen bottom and top
+				
+				if rotDeg >= 315 or rotDeg < 45 then
+					-- ~0 degrees: X horizontal (normal), Z vertical (flipped)
+					horizWorldL, horizWorldR = render.world.l, render.world.r
+					vertWorldB, vertWorldT = render.world.b, render.world.t
+				elseif rotDeg >= 45 and rotDeg < 135 then
+					-- ~90 degrees: Z horizontal, X vertical (normal)
+					horizWorldL, horizWorldR = render.world.t, render.world.b
+					vertWorldB, vertWorldT = render.world.l, render.world.r
+				elseif rotDeg >= 135 and rotDeg < 225 then
+					-- ~180 degrees: X horizontal (flipped), Z vertical (normal)
+					horizWorldL, horizWorldR = render.world.r, render.world.l
+					vertWorldB, vertWorldT = render.world.t, render.world.b
+				else
+					-- ~270 degrees: Z horizontal, X vertical (flipped)
+					horizWorldL, horizWorldR = render.world.b, render.world.t
+					vertWorldB, vertWorldT = render.world.r, render.world.l
+				end
+				
+				local horizWorldRange = horizWorldR - horizWorldL
+				local vertWorldRange = vertWorldT - vertWorldB
+				
+				-- Calculate how many pixels each spacing level would take on screen (per axis)
+				local hSmallestScreenSpacing = pipWidth * (smallestSpacing / math.abs(horizWorldRange))
+				local hMediumScreenSpacing = pipWidth * (mediumSpacing / math.abs(horizWorldRange))
+				local hLargestScreenSpacing = pipWidth * (largestSpacing / math.abs(horizWorldRange))
+				local vSmallestScreenSpacing = pipHeight * (smallestSpacing / math.abs(vertWorldRange))
+				local vMediumScreenSpacing = pipHeight * (mediumSpacing / math.abs(vertWorldRange))
+				local vLargestScreenSpacing = pipHeight * (largestSpacing / math.abs(vertWorldRange))
+
+				-- Show different levels based on screen spacing (per axis)
+				local hShowSmallest = hSmallestScreenSpacing >= 8
+				local hShowMedium = hMediumScreenSpacing >= 8
+				local hShowLargest = hLargestScreenSpacing >= 8
+				local vShowSmallest = vSmallestScreenSpacing >= 8
+				local vShowMedium = vMediumScreenSpacing >= 8
+				local vShowLargest = vLargestScreenSpacing >= 8
+				
+				glFunc.Texture(false)
+				glFunc.Color(1, 1, 1, 0.18)
+				
+				-- Draw horizontal edge marks (top/bottom of screen)
+				local startH = math.ceil(math.min(horizWorldL, horizWorldR) / smallestSpacing) * smallestSpacing
+				local endH = math.max(horizWorldL, horizWorldR)
+				local h = startH
+				while h <= endH do
+					local lsx = (h - horizWorldL) / horizWorldRange * pipWidth
+					if lsx >= 0 and lsx <= pipWidth then
+						local is16x = (h % largestSpacing == 0)
+						local is4x = (h % mediumSpacing == 0)
+						
+						local markType
+						if is16x and hShowLargest then
+							markType = 3
+						elseif is4x and hShowMedium then
+							markType = 2
+						elseif hShowSmallest then
+							markType = 1
+						end
+						
+						if markType then
+							glFunc.PushMatrix()
+							glFunc.Translate(lsx, pipHeight, 0)
+							glFunc.CallList(render.mapRulerMarkDlists.horizontal["top" .. markType])
+							glFunc.PopMatrix()
+							
+							glFunc.PushMatrix()
+							glFunc.Translate(lsx, 0, 0)
+							glFunc.CallList(render.mapRulerMarkDlists.horizontal["bottom" .. markType])
+							glFunc.PopMatrix()
+						end
+					end
+					h = h + smallestSpacing
+				end
+				
+				-- Draw vertical edge marks (left/right of screen)
+				local startV = math.ceil(math.min(vertWorldB, vertWorldT) / smallestSpacing) * smallestSpacing
+				local endV = math.max(vertWorldB, vertWorldT)
+				local v = startV
+				while v <= endV do
+					local lsy = (v - vertWorldB) / vertWorldRange * pipHeight
+					if lsy >= 0 and lsy <= pipHeight then
+						local is16x = (v % largestSpacing == 0)
+						local is4x = (v % mediumSpacing == 0)
+						
+						local markType
+						if is16x and vShowLargest then
+							markType = 3
+						elseif is4x and vShowMedium then
+							markType = 2
+						elseif vShowSmallest then
+							markType = 1
+						end
+						
+						if markType then
+							glFunc.PushMatrix()
+							glFunc.Translate(0, lsy, 0)
+							glFunc.CallList(render.mapRulerMarkDlists.vertical["left" .. markType])
+							glFunc.PopMatrix()
+							
+							glFunc.PushMatrix()
+							glFunc.Translate(pipWidth, lsy, 0)
+							glFunc.CallList(render.mapRulerMarkDlists.vertical["right" .. markType])
+							glFunc.PopMatrix()
+						end
+					end
+					v = v + smallestSpacing
+				end
+				
+				glFunc.Color(1, 1, 1, 1)
+			end, true)
+			
+			pipR2T.rulerNeedsUpdate = false
+		end
+end
+
+-- Blit the cached map ruler texture (called inside RenderPipContents)
+local function BlitMapRuler()
+	if pipR2T.rulerTex and gl.R2tHelper then
+		gl.R2tHelper.BlendTexRect(pipR2T.rulerTex, render.dim.l, render.dim.b, render.dim.r, render.dim.t, true)
+	end
+end
+
+-- Helper for drawing a textured quad — passed as callback to gl.BeginEnd to avoid closure allocation
+local function DrawTexturedQuad(qL, qB, qR, qT)
+	glFunc.TexCoord(0, 0)
+	glFunc.Vertex(qL, qB)
+	glFunc.TexCoord(1, 0)
+	glFunc.Vertex(qR, qB)
+	glFunc.TexCoord(1, 1)
+	glFunc.Vertex(qR, qT)
+	glFunc.TexCoord(0, 1)
+	glFunc.Vertex(qL, qT)
+end
+
+-- Blit an oversized R2T texture to screen with smooth camera UV-shift and zoom scaling.
+-- The texture was rendered centered at (storedWcx, storedWcz) with storedZoom and storedRotation.
+-- The blit positions the oversized quad so the current camera view aligns correctly through the stencil mask.
+-- Stencil must already be set up to clip to PIP bounds.
+local function BlitShiftedTexture(tex, texWidth, texHeight, storedWcx, storedWcz, storedZoom, storedRotation)
+	if not tex then return end
+
+	local resScale = config.contentResolutionScale
+
+	-- Camera offset since texture was rendered
+	local dx = cameraState.wcx - storedWcx
+	local dz = cameraState.wcz - storedWcz
+
+	-- Screen-space shift (pre-rotation):
+	--   Camera right (dx>0) → content shifts left → negative X
+	--   Camera south (dz>0) → content shifts up   → positive Y  (world Z+ = screen Y-)
+	local preShiftX = -dx * cameraState.zoom
+	local preShiftY = dz * cameraState.zoom
+
+	-- Rotate shift to match the rotation baked into the texture
+	local cosA = math.cos(storedRotation)
+	local sinA = math.sin(storedRotation)
+	local shiftX = preShiftX * cosA - preShiftY * sinA
+	local shiftY = preShiftX * sinA + preShiftY * cosA
+
+	-- Zoom scaling: texture was rendered at storedZoom, display at current zoom
+	local zoomRatio = storedZoom ~= 0 and (cameraState.zoom / storedZoom) or 1
+
+	-- PIP center in screen coordinates
+	local cx = (render.dim.l + render.dim.r) * 0.5
+	local cy = (render.dim.b + render.dim.t) * 0.5
+
+	-- Quad size: oversized texture mapped to screen pixels, scaled by zoom ratio
+	local halfW = texWidth * zoomRatio / (2 * resScale)
+	local halfH = texHeight * zoomRatio / (2 * resScale)
+
+	-- Quad position (centered on PIP + camera shift)
+	local qL = cx - halfW + shiftX
+	local qB = cy - halfH + shiftY
+	local qR = cx + halfW + shiftX
+	local qT = cy + halfH + shiftY
+
+	-- Draw textured quad (stencil clips to PIP bounds)
+	glFunc.Texture(tex)
+	glFunc.BeginEnd(glConst.QUADS, DrawTexturedQuad, qL, qB, qR, qT)
+	glFunc.Texture(false)
+end
+
+-- Render only the cheap/lightweight layers (ground texture, water, LOS overlay)
+-- Called inside R2T context with rotation matrix already set up
+local function RenderCheapLayers()
+	-- Apply rotation to content if minimap is rotated
 	if render.minimapRotation ~= 0 then
 		local centerX = render.dim.l + (render.dim.r - render.dim.l) / 2
 		local centerY = render.dim.b + (render.dim.t - render.dim.b) / 2
@@ -6424,6 +9662,27 @@ local function RenderPipContents()
 		DrawWaterAndLOSOverlays()
 	end
 
+	-- Pop rotation matrix if it was applied
+	if render.minimapRotation ~= 0 then
+		glFunc.PopMatrix()
+	end
+end
+
+-- Render the expensive layers (units, features, projectiles, commands, markers, camera bounds)
+-- Called inside R2T context for the oversized unitsTex
+local function RenderExpensiveLayers()
+	local cachedSelectedUnits = Spring.GetSelectedUnits()
+
+	-- Apply rotation to all content if minimap is rotated
+	if render.minimapRotation ~= 0 then
+		local centerX = render.dim.l + (render.dim.r - render.dim.l) / 2
+		local centerY = render.dim.b + (render.dim.t - render.dim.b) / 2
+		glFunc.PushMatrix()
+		glFunc.Translate(centerX, centerY, 0)
+		glFunc.Rotate(render.minimapRotation * 180 / math.pi, 0, 0, 1)
+		glFunc.Translate(-centerX, -centerY, 0)
+	end
+
 	-- Measure draw time for performance monitoring
 	local drawStartTime = os.clock()
 	DrawUnitsAndFeatures(cachedSelectedUnits)
@@ -6431,13 +9690,61 @@ local function RenderPipContents()
 
 	DrawCommandQueuesOverlay(cachedSelectedUnits)
 
-	-- Draw map markers
-	DrawMapMarkers()
-
 	-- Pop rotation matrix if it was applied
 	if render.minimapRotation ~= 0 then
 		glFunc.PopMatrix()
 	end
+end
+
+-- Full render for fallback when unitsTex is not available
+local function RenderPipContents()
+	-- Cache selected units once per render cycle to avoid multiple API calls
+	local cachedSelectedUnits = Spring.GetSelectedUnits()
+	
+	-- Apply rotation to all content if minimap is rotated
+	if render.minimapRotation ~= 0 then
+		local centerX = render.dim.l + (render.dim.r - render.dim.l) / 2
+		local centerY = render.dim.b + (render.dim.t - render.dim.b) / 2
+		glFunc.PushMatrix()
+		glFunc.Translate(centerX, centerY, 0)
+		glFunc.Rotate(render.minimapRotation * 180 / math.pi, 0, 0, 1)
+		glFunc.Translate(-centerX, -centerY, 0)
+	end
+	
+	if uiState.drawingGround then
+		-- Draw ground minimap
+		glFunc.Color(1, 1, 1, 1)
+		glFunc.Texture('$minimap')
+		glFunc.BeginEnd(glConst.QUADS, GroundTextureVertices)
+		glFunc.Texture(false)
+		
+		-- Draw water and LOS overlays
+		DrawWaterAndLOSOverlays()
+	end
+
+	-- Measure draw time for performance monitoring
+	local drawStartTime = os.clock()
+	DrawUnitsAndFeatures(cachedSelectedUnits)
+	pipR2T.contentLastDrawTime = os.clock() - drawStartTime
+
+	DrawCommandQueuesOverlay(cachedSelectedUnits)
+	
+	-- Pop rotation matrix if it was applied
+	if render.minimapRotation ~= 0 then
+		glFunc.PopMatrix()
+	end
+	
+	-- Blit map ruler AFTER rotation pop so marks stay at screen edges
+	-- The ruler texture already maps world coordinates for the current rotation angle
+	if uiState.drawingGround and config.showMapRuler then
+		local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
+		if not spec then
+			BlitMapRuler()
+		end
+	end
+	
+	-- NOTE: DrawInMiniMap overlays are now rendered in DrawScreen after the R2T is blitted,
+	-- because matrix manipulation doesn't work correctly inside the R2T context.
 end
 
 -- Helper function to draw box selection rectangle
@@ -6585,251 +9892,6 @@ local function DrawAreaCommand()
 	glFunc.Color(1, 1, 1, 1)
 end
 
--- Draw map ruler at PIP edges to show scale
-local function DrawMapRuler()
-	if not gl.R2tHelper then
-		return
-	end
-
-	-- Calculate ruler mark size
-	local markSize = math.ceil(3 * (render.vsy / 2000))
-
-	-- Generate cache key with rounding to avoid tiny changes triggering regeneration
-	-- Round world coordinates to nearest 10 units and screen dimensions to nearest 5 pixels
-	local cacheKey = string.format("%d_%d_%d_%d_%d_%d_%d_%d_%d",
-		math.floor(render.world.l / 3) * 3,
-		math.floor(render.world.r / 3) * 3,
-		math.floor(render.world.t / 3) * 3,
-		math.floor(render.world.b / 3) * 3,
-		math.floor(render.dim.l / 3) * 3,
-		math.floor(render.dim.r / 3) * 3,
-		math.floor(render.dim.b / 3) * 3,
-		math.floor(render.dim.t / 3) * 3,
-		markSize)
-
-	-- Check if texture needs regeneration
-	if pipR2T.rulerCacheKey ~= cacheKey then
-		pipR2T.rulerNeedsUpdate = true
-		pipR2T.rulerCacheKey = cacheKey
-	end
-
-	-- Create/update texture if needed
-	if pipR2T.rulerNeedsUpdate then
-		local pipWidth = render.dim.r - render.dim.l
-		local pipHeight = render.dim.t - render.dim.b
-
-		if not pipR2T.rulerTex or math.floor(pipWidth) ~= pipR2T.rulerLastWidth or math.floor(pipHeight) ~= pipR2T.rulerLastHeight then
-			if pipR2T.rulerTex then
-				gl.DeleteTexture(pipR2T.rulerTex)
-			end
-			pipR2T.rulerTex = gl.CreateTexture(math.floor(pipWidth), math.floor(pipHeight), {
-				target = GL.TEXTURE_2D, format = GL.RGBA, fbo = true,
-			})
-			pipR2T.rulerLastWidth = math.floor(pipWidth)
-			pipR2T.rulerLastHeight = math.floor(pipHeight)
-		end
-
-		if pipR2T.rulerTex then
-			gl.R2tHelper.RenderToTexture(pipR2T.rulerTex, function()
-				glFunc.Translate(-1, -1, 0)
-				glFunc.Scale(2 / pipWidth, 2 / pipHeight, 0)
-
-				-- Create reusable mark pattern display lists if not exist or size changed
-				if not render.mapRulerMarkDlists.horizontal or render.mapRulerLastMarkSize ~= markSize then
-					-- Clean up old display lists
-					if render.mapRulerMarkDlists.horizontal then
-						for _, dlist in pairs(render.mapRulerMarkDlists.horizontal) do
-							gl.DeleteList(dlist)
-						end
-						for _, dlist in pairs(render.mapRulerMarkDlists.vertical) do
-							gl.DeleteList(dlist)
-						end
-					end
-
-					render.mapRulerMarkDlists.horizontal = {}
-					render.mapRulerMarkDlists.vertical = {}
-
-					-- Create horizontal marks (top/bottom edges) - centered at origin
-					for i, mult in ipairs({1, 2, 3}) do
-						local length = markSize * mult
-						-- Top mark (extends downward from 0)
-						render.mapRulerMarkDlists.horizontal["top" .. i] = gl.CreateList(function()
-							glFunc.BeginEnd(glConst.QUADS, function()
-								glFunc.Vertex(-markSize/2, -length)
-								glFunc.Vertex(markSize/2, -length)
-								glFunc.Vertex(markSize/2, 0)
-								glFunc.Vertex(-markSize/2, 0)
-							end)
-						end)
-						-- Bottom mark (extends upward from 0)
-						render.mapRulerMarkDlists.horizontal["bottom" .. i] = gl.CreateList(function()
-							glFunc.BeginEnd(glConst.QUADS, function()
-								glFunc.Vertex(-markSize/2, 0)
-								glFunc.Vertex(markSize/2, 0)
-								glFunc.Vertex(markSize/2, length)
-								glFunc.Vertex(-markSize/2, length)
-							end)
-						end)
-					end
-
-					-- Create vertical marks (left/right edges) - centered at origin
-					for i, mult in ipairs({1, 2, 3}) do
-						local length = markSize * mult
-						-- Left mark (extends rightward from 0)
-						render.mapRulerMarkDlists.vertical["left" .. i] = gl.CreateList(function()
-							glFunc.BeginEnd(glConst.QUADS, function()
-								glFunc.Vertex(0, -markSize/2)
-								glFunc.Vertex(length, -markSize/2)
-								glFunc.Vertex(length, markSize/2)
-								glFunc.Vertex(0, markSize/2)
-							end)
-						end)
-						-- Right mark (extends leftward from 0)
-						render.mapRulerMarkDlists.vertical["right" .. i] = gl.CreateList(function()
-							glFunc.BeginEnd(glConst.QUADS, function()
-								glFunc.Vertex(-length, -markSize/2)
-								glFunc.Vertex(0, -markSize/2)
-								glFunc.Vertex(0, markSize/2)
-								glFunc.Vertex(-length, markSize/2)
-							end)
-						end)
-					end
-
-					render.mapRulerLastMarkSize = markSize
-				end
-
-				-- Use fixed ruler spacing
-				local smallestSpacing = 64
-				local mediumSpacing = smallestSpacing * 4  -- 256
-				local largestSpacing = smallestSpacing * 16  -- 1024
-
-				-- Get rotation in degrees (0-360)
-				local rotDeg = 0
-				if render.minimapRotation then
-					rotDeg = (render.minimapRotation * 180 / math.pi) % 360
-				end
-
-				-- Determine which world axis maps to screen horizontal/vertical and in which direction
-				-- Screen Y increases upward, world Z increases downward (south)
-				-- Screen X increases rightward, world X increases rightward (east)
-				local horizWorldL, horizWorldR  -- World coords at screen left and right
-				local vertWorldB, vertWorldT    -- World coords at screen bottom and top
-
-				if rotDeg >= 315 or rotDeg < 45 then
-					-- ~0 degrees: X horizontal (normal), Z vertical (flipped)
-					horizWorldL, horizWorldR = render.world.l, render.world.r
-					vertWorldB, vertWorldT = render.world.b, render.world.t
-				elseif rotDeg >= 45 and rotDeg < 135 then
-					-- ~90 degrees: Z horizontal, X vertical (normal)
-					horizWorldL, horizWorldR = render.world.t, render.world.b
-					vertWorldB, vertWorldT = render.world.l, render.world.r
-				elseif rotDeg >= 135 and rotDeg < 225 then
-					-- ~180 degrees: X horizontal (flipped), Z vertical (normal)
-					horizWorldL, horizWorldR = render.world.r, render.world.l
-					vertWorldB, vertWorldT = render.world.t, render.world.b
-				else
-					-- ~270 degrees: Z horizontal, X vertical (flipped)
-					horizWorldL, horizWorldR = render.world.b, render.world.t
-					vertWorldB, vertWorldT = render.world.r, render.world.l
-				end
-
-				local horizWorldRange = horizWorldR - horizWorldL
-				local vertWorldRange = vertWorldT - vertWorldB
-
-				-- Calculate how many pixels each spacing level would take on screen
-				local smallestScreenSpacing = pipWidth * (smallestSpacing / math.abs(horizWorldRange))
-				local mediumScreenSpacing = pipWidth * (mediumSpacing / math.abs(horizWorldRange))
-				local largestScreenSpacing = pipWidth * (largestSpacing / math.abs(horizWorldRange))
-
-				-- Show different levels based on screen spacing
-				local showSmallest = smallestScreenSpacing >= 8
-				local showMedium = mediumScreenSpacing >= 8
-				local showLargest = largestScreenSpacing >= 8
-
-				glFunc.Texture(false)
-				glFunc.Color(1, 1, 1, 0.18)
-
-				-- Draw horizontal edge marks (top/bottom of screen)
-				local startH = math.ceil(math.min(horizWorldL, horizWorldR) / smallestSpacing) * smallestSpacing
-				local endH = math.max(horizWorldL, horizWorldR)
-				local h = startH
-				while h <= endH do
-					local lsx = (h - horizWorldL) / horizWorldRange * pipWidth
-					if lsx >= 0 and lsx <= pipWidth then
-						local is16x = (h % largestSpacing == 0)
-						local is4x = (h % mediumSpacing == 0)
-
-						local markType
-						if is16x and showLargest then
-							markType = 3
-						elseif is4x and showMedium then
-							markType = 2
-						elseif showSmallest then
-							markType = 1
-						end
-
-						if markType then
-							glFunc.PushMatrix()
-							glFunc.Translate(lsx, pipHeight, 0)
-							glFunc.CallList(render.mapRulerMarkDlists.horizontal["top" .. markType])
-							glFunc.PopMatrix()
-
-							glFunc.PushMatrix()
-							glFunc.Translate(lsx, 0, 0)
-							glFunc.CallList(render.mapRulerMarkDlists.horizontal["bottom" .. markType])
-							glFunc.PopMatrix()
-						end
-					end
-					h = h + smallestSpacing
-				end
-
-				-- Draw vertical edge marks (left/right of screen)
-				local startV = math.ceil(math.min(vertWorldB, vertWorldT) / smallestSpacing) * smallestSpacing
-				local endV = math.max(vertWorldB, vertWorldT)
-				local v = startV
-				while v <= endV do
-					local lsy = (v - vertWorldB) / vertWorldRange * pipHeight
-					if lsy >= 0 and lsy <= pipHeight then
-						local is16x = (v % largestSpacing == 0)
-						local is4x = (v % mediumSpacing == 0)
-
-						local markType
-						if is16x and showLargest then
-							markType = 3
-						elseif is4x and showMedium then
-							markType = 2
-						elseif showSmallest then
-							markType = 1
-						end
-
-						if markType then
-							glFunc.PushMatrix()
-							glFunc.Translate(0, lsy, 0)
-							glFunc.CallList(render.mapRulerMarkDlists.vertical["left" .. markType])
-							glFunc.PopMatrix()
-
-							glFunc.PushMatrix()
-							glFunc.Translate(pipWidth, lsy, 0)
-							glFunc.CallList(render.mapRulerMarkDlists.vertical["right" .. markType])
-							glFunc.PopMatrix()
-						end
-					end
-					v = v + smallestSpacing
-				end
-
-				glFunc.Color(1, 1, 1, 1)
-			end, true)
-
-			pipR2T.rulerNeedsUpdate = false
-		end
-	end
-
-	-- Blit the cached ruler texture
-	if pipR2T.rulerTex then
-		gl.R2tHelper.BlendTexRect(pipR2T.rulerTex, render.dim.l, render.dim.b, render.dim.r, render.dim.t, true)
-	end
-end
-
 -- Draw build cursor (icon and placement grid) when holding a build command
 local function DrawBuildCursor()
 	local mx, my = spFunc.GetMouseState()
@@ -6874,10 +9936,10 @@ local function DrawBuildCursor()
 		local iconData = cache.unitIcon[buildDefID]
 		local texture = iconData.bitmap
 
-		-- Calculate icon size (same as DrawIcons function)
-		local distMult = math.min(math.max(1, 2.2-(cameraState.zoom*3.3)), 3)
-		local iconRadiusZoom = config.iconRadius * cameraState.zoom
-		local iconSize = iconRadiusZoom * distMult * iconData.size
+		-- Engine-matching icon size (same as GL4DrawIcons/DrawIcons)
+		local resScale = render.contentScale or 1
+		local unitBaseSize = Spring.GetConfigFloat("MinimapIconScale", 3.5)
+		local iconSize = unitBaseSize * (mapInfo.mapSizeX * mapInfo.mapSizeZ / 40000) ^ 0.25 * math.sqrt(cameraState.zoom) * resScale * iconData.size
 
 		local sx, sy = WorldToPipCoords(wx, wz)
 
@@ -6965,7 +10027,7 @@ local function DrawBuildCursor()
 	glFunc.Color(1, 1, 1, 1)
 end
 
--- Helper function to draw tracked player name
+-- Helper function to draw tracked player name (uses cached display list)
 local function DrawTrackedPlayerName()
 	if not (interactionState.trackingPlayerID and interactionState.isMouseOverPip) then
 		return
@@ -6981,17 +10043,583 @@ local function DrawTrackedPlayerName()
 		playerName = WG.playernames.getPlayername(interactionState.trackingPlayerID)
 	end
 
-	-- Get team color
-	local r, g, b = Spring.GetTeamColor(teamID)
-	local fontSize = math.floor(20 * render.widgetScale)
-	local padding = math.floor(17 * render.widgetScale)
-	local centerX = (render.dim.l + render.dim.r) / 2
+	-- Check if we need to regenerate the display list (player changed or name changed)
+	local needsUpdate = pipR2T.playerNameDlist == nil or
+		pipR2T.playerNameLastPlayerID ~= interactionState.trackingPlayerID or
+		pipR2T.playerNameLastName ~= playerName
 
-	font:Begin()
-	font:SetTextColor(r, g, b, 1)
-	font:SetOutlineColor(0, 0, 0, 0.8)
-	font:Print(playerName, centerX, render.dim.t - padding - (fontSize * 1.6), fontSize * 2, "con")
-	font:End()
+	if needsUpdate then
+		-- Clean up old display list
+		if pipR2T.playerNameDlist then
+			gl.DeleteList(pipR2T.playerNameDlist)
+		end
+
+		-- Get team color
+		local r, g, b = Spring.GetTeamColor(teamID)
+		local fontSize = math.floor(20 * render.widgetScale)
+		local padding = math.floor(17 * render.widgetScale)
+		local centerX = (render.dim.l + render.dim.r) / 2
+
+		-- Create new display list
+		pipR2T.playerNameDlist = gl.CreateList(function()
+			font:Begin()
+			font:SetTextColor(r, g, b, 1)
+			font:SetOutlineColor(0, 0, 0, 0.8)
+			font:Print(playerName, centerX, render.dim.t - padding - (fontSize * 1.6), fontSize * 2, "con")
+			font:End()
+		end)
+
+		pipR2T.playerNameLastPlayerID = interactionState.trackingPlayerID
+		pipR2T.playerNameLastName = playerName
+	end
+
+	-- Draw the cached display list
+	if pipR2T.playerNameDlist then
+		gl.CallList(pipR2T.playerNameDlist)
+	end
+end
+
+-- Helper function to format resource numbers compactly
+local function shortRes(n)
+	if n >= 10000000 then
+		return string.format("%.1fm", n / 1000000)
+	elseif n >= 10000 then
+		return string.format("%.1fk", n / 1000)
+	elseif n >= 1000 then
+		return string.format("%.0f", n)
+	else
+		return string.format("%.0f", n)
+	end
+end
+
+-- Helper function to draw resource bars when tracking a player camera (hidden when PIP is hovered)
+-- Bars update every frame, text updates at ~2 FPS via cached display list
+local function DrawTrackedPlayerResourceBars()
+	-- Only show when tracking a player camera AND not hovering the PIP
+	if not interactionState.trackingPlayerID then
+		return
+	end
+	if interactionState.isMouseOverPip then
+		return
+	end
+
+	local playerName, active, isSpec, teamID = spFunc.GetPlayerInfo(interactionState.trackingPlayerID, false)
+	if not teamID then
+		return
+	end
+
+	-- Get team resources - this works for spectators viewing any team
+	-- Returns: current, storage, pull, income, expense, share
+	local metalCur, metalMax, metalPull, metalIncome, metalExpense, metalShare = Spring.GetTeamResources(teamID, 'metal')
+	local energyCur, energyMax, energyPull, energyIncome, energyExpense, energyShare = Spring.GetTeamResources(teamID, 'energy')
+
+	if not (metalCur and energyCur) then
+		return
+	end
+
+	-- Get energy conversion level (mmLevel)
+	local mmLevel = Spring.GetTeamRulesParam(teamID, 'mmLevel')
+	if mmLevel == nil then mmLevel = 1 end
+
+	-- Check if player has teammates (for share slider)
+	local _, _, _, _, _, allyTeamID = Spring.GetTeamInfo(teamID, false)
+	local allyTeamList = Spring.GetTeamList(allyTeamID)
+	local hasTeammates = allyTeamList and #allyTeamList > 1
+
+	-- Calculate bar dimensions - compact version at top of PIP
+	local pipWidth = render.dim.r - render.dim.l
+	local pipHeight = render.dim.t - render.dim.b
+	local padding = math.floor(20 * render.widgetScale) * math.max(1, (render.vsx / 2700))
+	local barHeight = math.floor(math.max(5, 7 * render.widgetScale)) * math.max(1, (render.vsx / 2400))
+	local totalBarWidth = math.min(math.floor(pipWidth * 0.32), config.minPanelSize*0.5)  -- Each bar is 32% of PIP width
+	local gapBetweenBars = math.floor(totalBarWidth * 0.28)
+	
+	-- Position: top of PIP, with padding from edge and corner
+	local topY = render.dim.t - padding - render.elementCorner * 0.5
+	local barY = topY - barHeight
+	local centerX = (render.dim.l + render.dim.r) / 2
+	
+	-- Metal bar on left of center
+	local metalBarRight = centerX - gapBetweenBars / 2
+	local metalBarLeft = metalBarRight - totalBarWidth
+	
+	-- Energy bar on right of center
+	local energyBarLeft = centerX + gapBetweenBars / 2
+	local energyBarRight = energyBarLeft + totalBarWidth
+
+	-- Calculate fill amounts
+	local metalFill = math.min(1, math.max(0, metalCur / metalMax))
+	local energyFill = math.min(1, math.max(0, energyCur / energyMax))
+
+	-- Draw background boxes
+	local bgAlpha = 0.6
+	local cornerRadius = barHeight * 0.25
+	
+	glFunc.Color(0, 0, 0, bgAlpha)
+	render.RectRound(metalBarLeft - 2, barY - 2, metalBarRight + 2, topY + 2, cornerRadius, 1, 1, 1, 1)
+	render.RectRound(energyBarLeft - 2, barY - 2, energyBarRight + 2, topY + 2, cornerRadius, 1, 1, 1, 1)
+
+	-- Draw metal bar fill
+	if metalFill > 0.01 then
+		local fillRight = metalBarLeft + (totalBarWidth * metalFill)
+		glFunc.Color(0.77, 0.77, 0.77, 0.9)
+		render.RectRound(metalBarLeft, barY, fillRight, topY, cornerRadius, 1, metalFill >= 0.02 and 1 or 0, metalFill >= 0.02 and 1 or 0, 1)
+	end
+
+	-- Draw energy bar fill
+	if energyFill > 0.01 then
+		local fillRight = energyBarLeft + (totalBarWidth * energyFill)
+		glFunc.Color(1, 1, 0, 0.9)
+		render.RectRound(energyBarLeft, barY, fillRight, topY, cornerRadius, 1, energyFill >= 0.02 and 1 or 0, energyFill >= 0.02 and 1 or 0, 1)
+	end
+
+	-- Draw sliders
+	local sliderRadius = math.floor(barHeight * 0.55)
+	local sliderY = barY + barHeight / 2
+
+	-- Energy conversion slider (yellow, on energy bar only)
+	if mmLevel and mmLevel < 0.745 and mmLevel > 0.755 then
+		local convX = energyBarLeft + (totalBarWidth * mmLevel)
+		glFunc.Color(0.94, 0.94, 0.66, 1)
+		-- Draw slider knob as a circle
+		local steps = 10
+		glFunc.BeginEnd(GL.TRIANGLE_FAN, function()
+			glFunc.Vertex(convX, sliderY, 0)
+			for i = 0, steps do
+				local angle = (i / steps) * 2 * math.pi
+				glFunc.Vertex(convX + math.cos(angle) * sliderRadius, sliderY + math.sin(angle) * sliderRadius, 0)
+			end
+		end)
+		-- Draw outline
+		glFunc.Color(0, 0, 0, 0.6)
+		glFunc.LineWidth(1)
+		glFunc.BeginEnd(GL.LINE_LOOP, function()
+			for i = 0, steps - 1 do
+				local angle = (i / steps) * 2 * math.pi
+				glFunc.Vertex(convX + math.cos(angle) * sliderRadius, sliderY + math.sin(angle) * sliderRadius, 0)
+			end
+		end)
+	end
+
+	-- Share sliders (red, only if player has teammates)
+	if hasTeammates then
+		-- Metal share slider
+		if metalShare and metalShare < 0.98 then	-- default metalShare = 0.99
+			local shareX = metalBarLeft + (totalBarWidth * metalShare)
+			glFunc.Color(0.9, 0.2, 0.2, 0.9)
+			local steps = 10
+			glFunc.BeginEnd(GL.TRIANGLE_FAN, function()
+				glFunc.Vertex(shareX, sliderY, 0)
+				for i = 0, steps do
+					local angle = (i / steps) * 2 * math.pi
+					glFunc.Vertex(shareX + math.cos(angle) * sliderRadius, sliderY + math.sin(angle) * sliderRadius, 0)
+				end
+			end)
+			glFunc.Color(0, 0, 0, 0.6)
+			glFunc.LineWidth(1)
+			glFunc.BeginEnd(GL.LINE_LOOP, function()
+				for i = 0, steps - 1 do
+					local angle = (i / steps) * 2 * math.pi
+					glFunc.Vertex(shareX + math.cos(angle) * sliderRadius, sliderY + math.sin(angle) * sliderRadius, 0)
+				end
+			end)
+		end
+
+		-- Energy share slider
+		if energyShare and energyShare < 0.94 or energyShare > 0.96 then -- default energyShare = 0.949999
+			local shareX = energyBarLeft + (totalBarWidth * energyShare)
+			glFunc.Color(0.9, 0.2, 0.2, 0.9)
+			local steps = 10
+			glFunc.BeginEnd(GL.TRIANGLE_FAN, function()
+				glFunc.Vertex(shareX, sliderY, 0)
+				for i = 0, steps do
+					local angle = (i / steps) * 2 * math.pi
+					glFunc.Vertex(shareX + math.cos(angle) * sliderRadius, sliderY + math.sin(angle) * sliderRadius, 0)
+				end
+			end)
+			glFunc.Color(0, 0, 0, 0.6)
+			glFunc.LineWidth(1)
+			glFunc.BeginEnd(GL.LINE_LOOP, function()
+				for i = 0, steps - 1 do
+					local angle = (i / steps) * 2 * math.pi
+					glFunc.Vertex(shareX + math.cos(angle) * sliderRadius, sliderY + math.sin(angle) * sliderRadius, 0)
+				end
+			end)
+		end
+	end
+
+	-- Text rendering - use cached display list, update at ~2 FPS
+	local currentTime = os.clock()
+	local needsTextUpdate = pipR2T.resbarTextDlist == nil or
+		pipR2T.resbarTextLastPlayerID ~= interactionState.trackingPlayerID or
+		(currentTime - pipR2T.resbarTextLastUpdate) >= pipR2T.resbarTextUpdateRate
+
+	if needsTextUpdate then
+		-- Clean up old display list
+		if pipR2T.resbarTextDlist then
+			gl.DeleteList(pipR2T.resbarTextDlist)
+		end
+
+		-- Create new display list with current resource text
+		local fontSize = math.floor(math.max(12, 20 * render.widgetScale)) * math.max(1, (render.vsx / 2700))
+		local smallFontSize = math.floor(fontSize * 0.8)
+		local textY = barY + (barHeight / 2) + smallFontSize * 0.1
+		local incomeY = barY - smallFontSize * 0.65
+		local metalCenterX = (metalBarLeft + metalBarRight) / 2
+		local energyCenterX = (energyBarLeft + energyBarRight) / 2
+
+		pipR2T.resbarTextDlist = gl.CreateList(function()
+			font:Begin()
+			font:SetOutlineColor(0, 0, 0, 1)
+			
+			-- Metal: current amount centered on bar
+			font:SetTextColor(1, 1, 1, 1)
+			font:Print(shortRes(metalCur), metalCenterX, textY, fontSize, "ocn")
+			
+			-- Metal: income and pull below bar
+			font:SetTextColor(0.5, 1, 0.5, 1)
+			font:Print("+" .. shortRes(metalIncome), metalCenterX - 4, incomeY, smallFontSize, "orn")
+			font:SetTextColor(1, 0.5, 0.5, 1)
+			font:Print("-" .. shortRes(metalPull), metalCenterX + 4, incomeY, smallFontSize, "oln")
+			
+			-- Energy: current amount centered on bar
+			font:SetTextColor(1, 1, 0.7, 1)
+			font:Print(shortRes(energyCur), energyCenterX, textY, fontSize, "ocn")
+			
+			-- Energy: income and pull below bar
+			font:SetTextColor(0.5, 1, 0.5, 1)
+			font:Print("+" .. shortRes(energyIncome), energyCenterX - 4, incomeY, smallFontSize, "orn")
+			font:SetTextColor(1, 0.5, 0.5, 1)
+			font:Print("-" .. shortRes(energyPull), energyCenterX + 4, incomeY, smallFontSize, "oln")
+			
+			font:End()
+		end)
+
+		pipR2T.resbarTextLastUpdate = currentTime
+		pipR2T.resbarTextLastPlayerID = interactionState.trackingPlayerID
+	end
+
+	-- Draw the cached text display list
+	if pipR2T.resbarTextDlist then
+		gl.CallList(pipR2T.resbarTextDlist)
+	end
+	
+	glFunc.Color(1, 1, 1, 1)
+end
+
+-- Helper function to draw a minimap overlay in PIP corner when tracking a player camera
+-- Shows map with LOS overlay and a rectangle indicating the current PIP view
+-- Also shown for players (not just spectators tracking others) and when hovering
+local function DrawTrackedPlayerMinimap()
+	-- In minimap mode, don't show the pip-minimap overlay (we ARE the minimap)
+	if isMinimapMode then
+		interactionState.pipMinimapBounds = nil
+		return
+	end
+	
+	-- Show for players OR when tracking a player camera OR when hovering
+	local showForPlayer = not cameraState.mySpecState  -- Show for players
+	local showForTracking = interactionState.trackingPlayerID ~= nil  -- Show when tracking
+	local showForHover = interactionState.isMouseOverPip  -- Show when hovering
+	
+	if not showForPlayer and not showForTracking and not showForHover then
+		interactionState.pipMinimapBounds = nil
+		return
+	end
+
+	-- Get team for LOS overlay
+	local teamID
+	if interactionState.trackingPlayerID then
+		local playerName, active, isSpec
+		playerName, active, isSpec, teamID = spFunc.GetPlayerInfo(interactionState.trackingPlayerID, false)
+	else
+		-- Use local player's team
+		teamID = Spring.GetMyTeamID()
+	end
+	if not teamID then
+		interactionState.pipMinimapBounds = nil
+		return
+	end
+
+	-- Calculate minimap dimensions - use hover size if hovering, otherwise normal size
+	local pipWidth = render.dim.r - render.dim.l
+	local pipHeight = render.dim.t - render.dim.b
+	local heightPercent = showForHover and config.minimapHoverHeightPercent or config.minimapHeightPercent
+	local minimapHeight = math.floor(pipHeight * heightPercent)
+	
+	-- Check if map is rotated 90°/270° — swap aspect ratio so minimap container matches rotated content
+	local isRotated90 = false
+	if render.minimapRotation then
+		local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+		if rotDeg > 45 and rotDeg < 135 then
+			isRotated90 = true
+		end
+	end
+	local naturalAspect = mapInfo.mapSizeX / mapInfo.mapSizeZ  -- true (unrotated) map aspect
+	local mapAspect = isRotated90 and (mapInfo.mapSizeZ / mapInfo.mapSizeX) or naturalAspect
+	local minimapWidth
+	if isRotated90 and naturalAspect > 1 then
+		-- Wide map rotated: keep the longest dimension the same as unrotated
+		-- Unrotated width would be minimapHeight * naturalAspect (the longest dim)
+		-- Use that as the new height, derive width from rotated aspect
+		local unrotatedWidth = math.floor(minimapHeight * naturalAspect)
+		minimapHeight = unrotatedWidth
+		minimapWidth = math.floor(minimapHeight * mapAspect)
+	elseif isRotated90 and naturalAspect <= 1 then
+		-- Tall map rotated: it becomes wide, keep height as-is
+		minimapWidth = math.floor(minimapHeight * mapAspect)
+	else
+		minimapWidth = math.floor(minimapHeight * naturalAspect)
+	end
+
+	-- Clamp to reasonable size
+	minimapWidth = math.min(minimapWidth, math.floor(pipWidth * 0.35))
+	minimapHeight = math.floor(minimapWidth / mapAspect)
+
+	-- Position based on config corner setting
+	-- 1=bottom-left, 2=bottom-right, 3=top-left, 4=top-right
+	-- When tracking units, add cornerSize offset; otherwise stick to PIP edge
+	local isTrackingUnits = interactionState.areTracking and #interactionState.areTracking > 0
+	local cornerSize = isTrackingUnits and math.floor(render.elementCorner * 0.6) or 0
+	local borderOffset = isTrackingUnits and 1 or 0  -- Touch the team color border, or snap to edge
+	local mmLeft, mmBottom, mmRight, mmTop
+	local corner = config.pipMinimapCorner or 1
+	
+	if corner == 1 then  -- bottom-left
+		mmLeft = render.dim.l + cornerSize + borderOffset
+		mmBottom = render.dim.b + cornerSize + borderOffset
+		mmRight = mmLeft + minimapWidth
+		mmTop = mmBottom + minimapHeight
+	elseif corner == 2 then  -- bottom-right
+		mmRight = render.dim.r - cornerSize - borderOffset
+		mmBottom = render.dim.b + cornerSize + borderOffset
+		mmLeft = mmRight - minimapWidth
+		mmTop = mmBottom + minimapHeight
+	elseif corner == 3 then  -- top-left
+		mmLeft = render.dim.l + cornerSize + borderOffset
+		mmTop = render.dim.t - cornerSize - borderOffset
+		mmRight = mmLeft + minimapWidth
+		mmBottom = mmTop - minimapHeight
+	else  -- top-right (4)
+		mmRight = render.dim.r - cornerSize - borderOffset
+		mmTop = render.dim.t - cornerSize - borderOffset
+		mmLeft = mmRight - minimapWidth
+		mmBottom = mmTop - minimapHeight
+	end
+
+	-- Store minimap bounds for click handling (include the border)
+	interactionState.pipMinimapBounds = {
+		l = corner == 2 and (mmLeft - 3) or mmLeft,
+		r = corner == 1 and (mmRight + 3) or mmRight,
+		b = corner >= 3 and (mmBottom - 3) or mmBottom,
+		t = corner <= 2 and (mmTop + 3) or mmTop,
+		-- Store actual drawing bounds (without border) for coordinate conversion
+		drawL = mmLeft,
+		drawR = mmRight,
+		drawB = mmBottom,
+		drawT = mmTop,
+	}
+
+	-- Determine which corner faces PIP center for chamfer and border
+	-- bottom-left: chamfer top-right, border top+right
+	-- bottom-right: chamfer top-left, border top+left
+	-- top-left: chamfer bottom-right, border bottom+right
+	-- top-right: chamfer bottom-left, border bottom+left
+	local chamferSize = math.floor(minimapHeight * 0.06)
+	
+	glFunc.Color(0, 0, 0, 0.85)
+	if corner == 1 then  -- bottom-left: chamfer top-right
+		glFunc.BeginEnd(GL.POLYGON, function()
+			glFunc.Vertex(mmLeft, mmBottom)
+			glFunc.Vertex(mmRight + 3, mmBottom)
+			glFunc.Vertex(mmRight + 3, mmTop + 3 - chamferSize)
+			glFunc.Vertex(mmRight + 3 - chamferSize, mmTop + 3)
+			glFunc.Vertex(mmLeft, mmTop + 3)
+		end)
+	elseif corner == 2 then  -- bottom-right: chamfer top-left
+		glFunc.BeginEnd(GL.POLYGON, function()
+			glFunc.Vertex(mmRight, mmBottom)
+			glFunc.Vertex(mmRight, mmTop + 3)
+			glFunc.Vertex(mmLeft - 3 + chamferSize, mmTop + 3)
+			glFunc.Vertex(mmLeft - 3, mmTop + 3 - chamferSize)
+			glFunc.Vertex(mmLeft - 3, mmBottom)
+		end)
+	elseif corner == 3 then  -- top-left: chamfer bottom-right
+		glFunc.BeginEnd(GL.POLYGON, function()
+			glFunc.Vertex(mmLeft, mmTop)
+			glFunc.Vertex(mmLeft, mmBottom - 3)
+			glFunc.Vertex(mmRight + 3 - chamferSize, mmBottom - 3)
+			glFunc.Vertex(mmRight + 3, mmBottom - 3 + chamferSize)
+			glFunc.Vertex(mmRight + 3, mmTop)
+		end)
+	else  -- top-right: chamfer bottom-left
+		glFunc.BeginEnd(GL.POLYGON, function()
+			glFunc.Vertex(mmRight, mmTop)
+			glFunc.Vertex(mmLeft - 3, mmTop)
+			glFunc.Vertex(mmLeft - 3, mmBottom - 3 + chamferSize)
+			glFunc.Vertex(mmLeft - 3 + chamferSize, mmBottom - 3)
+			glFunc.Vertex(mmRight, mmBottom - 3)
+		end)
+	end
+
+	-- Draw border on sides facing PIP center
+	glFunc.Color(0.5, 0.5, 0.5, 0.6)
+	glFunc.LineWidth(1)
+	if corner == 1 then  -- bottom-left: border top+right
+		glFunc.BeginEnd(GL.LINE_STRIP, function()
+			glFunc.Vertex(mmLeft, mmTop + 3)
+			glFunc.Vertex(mmRight + 3 - chamferSize, mmTop + 3)
+			glFunc.Vertex(mmRight + 3, mmTop + 3 - chamferSize)
+			glFunc.Vertex(mmRight + 3, mmBottom)
+		end)
+	elseif corner == 2 then  -- bottom-right: border top+left
+		glFunc.BeginEnd(GL.LINE_STRIP, function()
+			glFunc.Vertex(mmRight, mmTop + 3)
+			glFunc.Vertex(mmLeft - 3 + chamferSize, mmTop + 3)
+			glFunc.Vertex(mmLeft - 3, mmTop + 3 - chamferSize)
+			glFunc.Vertex(mmLeft - 3, mmBottom)
+		end)
+	elseif corner == 3 then  -- top-left: border bottom+right
+		glFunc.BeginEnd(GL.LINE_STRIP, function()
+			glFunc.Vertex(mmLeft, mmBottom - 3)
+			glFunc.Vertex(mmRight + 3 - chamferSize, mmBottom - 3)
+			glFunc.Vertex(mmRight + 3, mmBottom - 3 + chamferSize)
+			glFunc.Vertex(mmRight + 3, mmTop)
+		end)
+	else  -- top-right: border bottom+left
+		glFunc.BeginEnd(GL.LINE_STRIP, function()
+			glFunc.Vertex(mmRight, mmBottom - 3)
+			glFunc.Vertex(mmLeft - 3 + chamferSize, mmBottom - 3)
+			glFunc.Vertex(mmLeft - 3, mmBottom - 3 + chamferSize)
+			glFunc.Vertex(mmLeft - 3, mmTop)
+		end)
+	end
+
+	-- Apply rotation for minimap content
+	local mmCenterX = (mmLeft + mmRight) / 2
+	local mmCenterY = (mmBottom + mmTop) / 2
+
+	-- When rotated 90°/270°, content inside the rotation matrix must use swapped width/height
+	-- so that after rotation it visually fills the container (which has the rotated aspect ratio)
+	local cLeft, cRight, cBottom, cTop, cWidth, cHeight
+	if isRotated90 then
+		cWidth = minimapHeight  -- container height becomes content width (will rotate to visual height)
+		cHeight = minimapWidth  -- container width becomes content height (will rotate to visual width)
+		cLeft = mmCenterX - cWidth / 2
+		cRight = mmCenterX + cWidth / 2
+		cBottom = mmCenterY - cHeight / 2
+		cTop = mmCenterY + cHeight / 2
+	else
+		cLeft, cRight, cBottom, cTop = mmLeft, mmRight, mmBottom, mmTop
+		cWidth = minimapWidth
+		cHeight = minimapHeight
+	end
+
+	if render.minimapRotation ~= 0 then
+		glFunc.PushMatrix()
+		glFunc.Translate(mmCenterX, mmCenterY, 0)
+		glFunc.Rotate(render.minimapRotation * 180 / math.pi, 0, 0, 1)
+		glFunc.Translate(-mmCenterX, -mmCenterY, 0)
+	end
+
+	-- Draw minimap ground texture (UV: 0,0 = top-left/NW, 1,1 = bottom-right/SE)
+	glFunc.Color(1, 1, 1, 1)
+	glFunc.Texture('$minimap')
+	glFunc.BeginEnd(GL.QUADS, function()
+		glFunc.TexCoord(0, 0); glFunc.Vertex(cLeft, cTop)
+		glFunc.TexCoord(1, 0); glFunc.Vertex(cRight, cTop)
+		glFunc.TexCoord(1, 1); glFunc.Vertex(cRight, cBottom)
+		glFunc.TexCoord(0, 1); glFunc.Vertex(cLeft, cBottom)
+	end)
+	glFunc.Texture(false)
+
+	-- Draw water/lava/void overlay
+	if mapInfo.hasWater and waterShader then
+		gl.UseShader(waterShader)
+		local r, g, b, a
+		if mapInfo.voidWater then
+			r, g, b, a = 0, 0, 0, 1
+		elseif mapInfo.isLava then
+			r, g, b, a = 0.22, 0, 0, 1
+		else
+			r, g, b, a = 0.08, 0.11, 0.22, 0.5
+		end
+		gl.UniformFloat(gl.GetUniformLocation(waterShader, "waterColor"), r, g, b, a)
+		gl.UniformFloat(gl.GetUniformLocation(waterShader, "waterLevel"), GetWaterLevel())
+		gl.UniformInt(gl.GetUniformLocation(waterShader, "heightTex"), 0)
+		glFunc.Texture(0, '$heightmap')
+		glFunc.Color(1, 1, 1, 1)
+		glFunc.BeginEnd(GL.QUADS, function()
+			glFunc.TexCoord(0, 0); glFunc.Vertex(cLeft, cTop)
+			glFunc.TexCoord(1, 0); glFunc.Vertex(cRight, cTop)
+			glFunc.TexCoord(1, 1); glFunc.Vertex(cRight, cBottom)
+			glFunc.TexCoord(0, 1); glFunc.Vertex(cLeft, cBottom)
+		end)
+		glFunc.Texture(0, false)
+		gl.UseShader(0)
+	end
+
+	-- Draw LOS overlay on minimap (only after game has started and when LOS should be shown)
+	local shouldShowLOS, _ = ShouldShowLOS()
+	if config.showLosOverlay and shouldShowLOS and pipR2T.losTex and gameHasStarted then
+		gl.Blending(GL.DST_COLOR, GL.ZERO)
+		glFunc.Color(1, 1, 1, 1)
+		glFunc.Texture(pipR2T.losTex)
+		glFunc.BeginEnd(GL.QUADS, function()
+			glFunc.TexCoord(0, 0); glFunc.Vertex(cLeft, cTop)
+			glFunc.TexCoord(1, 0); glFunc.Vertex(cRight, cTop)
+			glFunc.TexCoord(1, 1); glFunc.Vertex(cRight, cBottom)
+			glFunc.TexCoord(0, 1); glFunc.Vertex(cLeft, cBottom)
+		end)
+		glFunc.Texture(false)
+		gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+	end
+
+	-- Draw view rectangle (dynamic, updates every frame)
+	local worldL = math.max(0, math.min(mapInfo.mapSizeX, render.world.l))
+	local worldR = math.max(0, math.min(mapInfo.mapSizeX, render.world.r))
+	local worldT = math.max(0, math.min(mapInfo.mapSizeZ, render.world.t))
+	local worldB = math.max(0, math.min(mapInfo.mapSizeZ, render.world.b))
+
+	local viewL = cLeft + (worldL / mapInfo.mapSizeX) * cWidth
+	local viewR = cLeft + (worldR / mapInfo.mapSizeX) * cWidth
+	local viewT = cTop - (worldT / mapInfo.mapSizeZ) * cHeight
+	local viewB = cTop - (worldB / mapInfo.mapSizeZ) * cHeight
+
+	-- Draw dark shadow outline behind view rectangle
+	glFunc.Color(0, 0, 0, 0.33)
+	glFunc.LineWidth(3)
+	glFunc.BeginEnd(GL.LINE_LOOP, function()
+		glFunc.Vertex(viewL, viewB)
+		glFunc.Vertex(viewR, viewB)
+		glFunc.Vertex(viewR, viewT)
+		glFunc.Vertex(viewL, viewT)
+	end)
+
+	-- Draw white view rectangle on top
+	glFunc.Color(1, 1, 1, 0.9)
+	glFunc.LineWidth(1.5)
+	glFunc.BeginEnd(GL.LINE_LOOP, function()
+		glFunc.Vertex(viewL, viewB)
+		glFunc.Vertex(viewR, viewB)
+		glFunc.Vertex(viewR, viewT)
+		glFunc.Vertex(viewL, viewT)
+	end)
+
+	glFunc.Color(1, 1, 1, 0.15)
+	glFunc.BeginEnd(GL.QUADS, function()
+		glFunc.Vertex(viewL, viewB)
+		glFunc.Vertex(viewR, viewB)
+		glFunc.Vertex(viewR, viewT)
+		glFunc.Vertex(viewL, viewT)
+	end)
+
+	if render.minimapRotation ~= 0 then
+		glFunc.PopMatrix()
+	end
+
+	glFunc.LineWidth(1)
+	glFunc.Color(1, 1, 1, 1)
 end
 
 -- Helper function to update R2T frame textures
@@ -7011,6 +10639,15 @@ local function UpdateR2TFrame(pipWidth, pipHeight)
 			gl.DeleteTexture(pipR2T.frameButtonsTex)
 			pipR2T.frameButtonsTex = nil
 		end
+		-- Invalidate text display lists when size changes (positions change)
+		if pipR2T.resbarTextDlist then
+			gl.DeleteList(pipR2T.resbarTextDlist)
+			pipR2T.resbarTextDlist = nil
+		end
+		if pipR2T.playerNameDlist then
+			gl.DeleteList(pipR2T.playerNameDlist)
+			pipR2T.playerNameDlist = nil
+		end
 		pipR2T.frameLastWidth = math.floor(pipWidth)
 		pipR2T.frameLastHeight = math.floor(pipHeight)
 	end
@@ -7020,7 +10657,7 @@ local function UpdateR2TFrame(pipWidth, pipHeight)
 		-- Create texture large enough to include elementPadding on all sides
 		local bgTexWidth = math.floor(pipWidth + render.elementPadding * 2)
 		local bgTexHeight = math.floor(pipHeight + render.elementPadding * 2)
-
+		
 		if not pipR2T.frameBackgroundTex then
 			pipR2T.frameBackgroundTex = gl.CreateTexture(bgTexWidth, bgTexHeight, {
 				target = GL.TEXTURE_2D, format = GL.RGBA, fbo = true,
@@ -7037,7 +10674,8 @@ local function UpdateR2TFrame(pipWidth, pipHeight)
 				local padT = render.dim.t + render.elementPadding
 				-- Translate to origin for texture rendering
 				glFunc.Translate(-padL, -padB, 0)
-				render.UiElement(padL, padB, padR, padT, 1, 1, 1, 1, nil, nil, nil, nil, nil, nil, nil, nil)
+				local tl, tr, br, bl = GetChamferedCorners(padL, padB, padR, padT)
+				render.UiElement(padL, padB, padR, padT, tl, tr, br, bl, nil, nil, nil, nil, nil, nil, nil, nil)
 			end, true)
 		end
 
@@ -7062,12 +10700,18 @@ local function UpdateR2TFrame(pipWidth, pipHeight)
 		gl.R2tHelper.BlendTexRect(pipR2T.frameBackgroundTex, render.dim.l-render.elementPadding, render.dim.b-render.elementPadding, render.dim.r+render.elementPadding, render.dim.t+render.elementPadding, true)
 	else
 		-- Fallback to direct rendering if texture not available
-		render.UiElement(render.dim.l-render.elementPadding, render.dim.b-render.elementPadding, render.dim.r+render.elementPadding, render.dim.t+render.elementPadding, 1, 1, 1, 1, nil, nil, nil, nil, nil, nil, nil, nil)
+		local padL = render.dim.l - render.elementPadding
+		local padB = render.dim.b - render.elementPadding
+		local padR = render.dim.r + render.elementPadding
+		local padT = render.dim.t + render.elementPadding
+		local tl, tr, br, bl = GetChamferedCorners(padL, padB, padR, padT)
+		render.UiElement(padL, padB, padR, padT, tl, tr, br, bl, nil, nil, nil, nil, nil, nil, nil, nil)
 	end
 end
 
 -- Helper function to calculate dynamic update rate
 local function CalculateDynamicUpdateRate()
+	-- Base rate from zoom level
 	local dynamicUpdateRate = config.pipMinUpdateRate
 	if cameraState.zoom >= config.pipZoomThresholdMax then
 		dynamicUpdateRate = config.pipMaxUpdateRate
@@ -7075,39 +10719,219 @@ local function CalculateDynamicUpdateRate()
 		dynamicUpdateRate = config.pipMinUpdateRate + (config.pipMaxUpdateRate - config.pipMinUpdateRate) * ((cameraState.zoom - config.pipZoomThresholdMin) / (config.pipZoomThresholdMax - config.pipZoomThresholdMin))
 	end
 
-	if pipR2T.contentLastDrawTime > 0 then
-		local targetPerformanceFactor = 1.0
-		if pipR2T.contentLastDrawTime > config.pipTargetDrawTime then
-			targetPerformanceFactor = math.max(0.5, config.pipTargetDrawTime / pipR2T.contentLastDrawTime)
-		elseif pipR2T.contentLastDrawTime < config.pipTargetDrawTime * 0.7 then
-			targetPerformanceFactor = math.min(1.0, pipR2T.contentPerformanceFactor * 1.02)
+	-- Apply performance-based adjustment using averaged frame times
+	local avgDrawTime = pipR2T.contentDrawTimeAverage
+	if avgDrawTime > 0 then
+		-- Calculate target rate based on how draw time compares to pipTargetDrawTime
+		-- If draw time exceeds target, scale the rate down proportionally
+		local targetDrawTime = config.pipTargetDrawTime
+		if avgDrawTime > targetDrawTime and targetDrawTime > 0 then
+			-- Scale rate so that (rate * avgDrawTime) approaches (rate * targetDrawTime)
+			-- e.g. if draw time is 2x target, halve the rate
+			local targetRate = dynamicUpdateRate * (targetDrawTime / avgDrawTime)
+			-- Clamp to floor rate
+			targetRate = math.max(config.pipFloorUpdateRate, targetRate)
+			-- Smooth transition towards target
+			local targetFactor = targetRate / dynamicUpdateRate
+			pipR2T.contentPerformanceFactor = pipR2T.contentPerformanceFactor + (targetFactor - pipR2T.contentPerformanceFactor) * config.pipPerformanceAdjustSpeed
+		else
+			-- Below target, gradually recover towards 1.0
+			pipR2T.contentPerformanceFactor = pipR2T.contentPerformanceFactor + (1.0 - pipR2T.contentPerformanceFactor) * config.pipPerformanceAdjustSpeed * 0.5
 		end
-		pipR2T.contentPerformanceFactor = pipR2T.contentPerformanceFactor + (targetPerformanceFactor - pipR2T.contentPerformanceFactor) * config.pipPerformanceAdjustSpeed
-		dynamicUpdateRate = math.max(10, dynamicUpdateRate * pipR2T.contentPerformanceFactor)
+		-- Apply performance factor, ensuring we don't go below floor rate
+		dynamicUpdateRate = math.max(config.pipFloorUpdateRate, dynamicUpdateRate * pipR2T.contentPerformanceFactor)
 	end
 
 	pipR2T.contentCurrentUpdateRate = dynamicUpdateRate
 	return dynamicUpdateRate
 end
 
--- Helper function to update R2T content texture
-local function UpdateR2TContent(currentTime, pipUpdateInterval, pipWidth, pipHeight)
+-- Helper function to update the oversized units texture at throttled rate
+-- Renders expensive layers (units, features, projectiles, commands, markers, camera bounds)
+local function UpdateR2TUnits(currentTime, pipUpdateInterval, pipWidth, pipHeight)
 	if not gl.R2tHelper then
 		return
 	end
 
-	-- Check if size changed
-	local contentSizeChanged = math.floor(pipWidth) ~= pipR2T.contentLastWidth or math.floor(pipHeight) ~= pipR2T.contentLastHeight
+	-- In minimap mode, skip rendering until ViewResize has initialized the zoom level
+	if isMinimapMode and not minimapModeMinZoom then
+		return
+	end
 
-	-- Check if should update
-	-- During resize, respect FPS throttling unless it's a forced update or unlimited FPS
-	local timeSinceLastUpdate = currentTime - pipR2T.contentLastUpdateTime
-	local shouldUpdate = pipR2T.contentNeedsUpdate or
+	-- Get current rotation early (before shouldUpdate check) so rotation changes are detected
+	local currentRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+
+	local resScale = config.contentResolutionScale
+	local margin = config.smoothCameraMargin
+	local uW = math.floor(pipWidth * (1 + 2 * margin) * resScale)
+	local uH = math.floor(pipHeight * (1 + 2 * margin) * resScale)
+
+	-- Check if size changed
+	local sizeChanged = math.floor(pipWidth) ~= pipR2T.unitsLastWidth or math.floor(pipHeight) ~= pipR2T.unitsLastHeight
+
+	-- Check if rotation changed (requires re-render as rotation is baked into unitsTex)
+	local rotChanged = pipR2T.unitsRotation ~= currentRotation
+
+	-- Check if camera has drifted far enough to consume most of the margin
+	local driftForced = false
+	if pipR2T.unitsZoom ~= 0 and margin > 0 then
+		local dx = cameraState.wcx - pipR2T.unitsWcx
+		local dz = cameraState.wcz - pipR2T.unitsWcz
+		local marginWorldX = margin * pipWidth / cameraState.zoom
+		local marginWorldZ = margin * pipHeight / cameraState.zoom
+		if marginWorldX > 0 and marginWorldZ > 0 then
+			local driftFracX = math.abs(dx) / marginWorldX
+			local driftFracZ = math.abs(dz) / marginWorldZ
+			local zoomRatio = cameraState.zoom / pipR2T.unitsZoom
+			if driftFracX * zoomRatio > 0.7 or driftFracZ * zoomRatio > 0.7 then
+				driftForced = true
+			end
+		end
+	end
+
+	-- Check if should update based on time
+	-- Zoom changes are handled by scaling the blit quad, so they don't force a re-render
+	-- During resize, sizeChanged defers to throttle instead of forcing immediate update —
+	-- this avoids texture alloc/dealloc/render on every frame of the drag
+	local timeSinceLastUpdate = currentTime - pipR2T.unitsLastUpdateTime
+	local shouldUpdate = pipR2T.unitsNeedsUpdate or rotChanged or driftForced or
+		(sizeChanged and not uiState.areResizing) or
 		pipUpdateInterval == 0 or
 		(pipUpdateInterval > 0 and timeSinceLastUpdate >= pipUpdateInterval)
 
 	-- If size changed but we're throttled, defer the update
-	if contentSizeChanged and not shouldUpdate then
+	if sizeChanged and not shouldUpdate then
+		pipR2T.unitsNeedsUpdate = true
+	end
+
+	if not shouldUpdate then
+		return
+	end
+
+	-- Delete old texture if size changed
+	if sizeChanged then
+		if pipR2T.unitsTex then
+			gl.DeleteTexture(pipR2T.unitsTex)
+			pipR2T.unitsTex = nil
+		end
+		pipR2T.unitsLastWidth = math.floor(pipWidth)
+		pipR2T.unitsLastHeight = math.floor(pipHeight)
+	end
+
+	-- Create texture if needed
+	if not pipR2T.unitsTex and uW >= 1 and uH >= 1 then
+		pipR2T.unitsTex = gl.CreateTexture(uW, uH, {
+			target = GL.TEXTURE_2D, format = GL.RGBA, fbo = true,
+		})
+		pipR2T.unitsTexWidth = uW
+		pipR2T.unitsTexHeight = uH
+	end
+
+	if pipR2T.unitsTex then
+		-- Use the rotation we already fetched
+		render.minimapRotation = currentRotation
+
+		gl.R2tHelper.RenderToTexture(pipR2T.unitsTex, function()
+			glFunc.Translate(-1, -1, 0)
+			glFunc.Scale(2 / uW, 2 / uH, 0)
+
+			-- Use separate blend for alpha: color blends normally, alpha accumulates
+			-- correctly for later premultiplied compositing (avoids alpha² darkening)
+			gl.BlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA)
+
+			-- Save current dimensions
+			pools.savedDim.l, pools.savedDim.r, pools.savedDim.b, pools.savedDim.t = render.dim.l, render.dim.r, render.dim.b, render.dim.t
+
+			-- Set oversized dimensions — contentScale = resScale so RecalcWorldCoords
+			-- divides by resScale, leaving the (1 + 2*margin) factor to expand world bounds
+			render.dim.l, render.dim.b, render.dim.r, render.dim.t = 0, 0, uW, uH
+			render.contentScale = resScale
+			RecalculateWorldCoordinates()
+
+			-- Store world bounds and camera state for the compositing blit
+			pipR2T.unitsWorld.l = render.world.l
+			pipR2T.unitsWorld.r = render.world.r
+			pipR2T.unitsWorld.b = render.world.b
+			pipR2T.unitsWorld.t = render.world.t
+			pipR2T.unitsZoom = cameraState.zoom
+			pipR2T.unitsRotation = render.minimapRotation
+			pipR2T.unitsWcx = cameraState.wcx
+			pipR2T.unitsWcz = cameraState.wcz
+
+			-- Use pcall so restore always runs even if rendering errors
+			local ok, err = pcall(RenderExpensiveLayers)
+			if not ok then
+				Spring.Echo("[PIP] Units render error: " .. tostring(err))
+			end
+
+			-- Restore blending and original values
+			gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+			render.contentScale = 1
+			render.dim.l, render.dim.r, render.dim.b, render.dim.t = pools.savedDim.l, pools.savedDim.r, pools.savedDim.b, pools.savedDim.t
+			RecalculateWorldCoordinates()
+			RecalculateGroundTextureCoordinates()
+		end, true)
+		pipR2T.unitsLastUpdateTime = currentTime
+		pipR2T.unitsNeedsUpdate = false
+	end
+end
+
+-- Update oversized content texture (cheap layers: ground, water, LOS) at throttled rate
+-- The oversized texture provides margin for smooth camera panning via UV-shift in DrawScreen
+local function UpdateR2TCheapLayers(currentTime, pipUpdateInterval, pipWidth, pipHeight)
+	if not gl.R2tHelper then
+		return
+	end
+
+	-- In minimap mode, skip rendering until ViewResize has initialized the zoom level
+	if isMinimapMode and not minimapModeMinZoom then
+		return
+	end
+
+	local resScale = config.contentResolutionScale
+	local margin = config.smoothCameraMarginCheap
+	local cW = math.floor(pipWidth * (1 + 2 * margin) * resScale)
+	local cH = math.floor(pipHeight * (1 + 2 * margin) * resScale)
+
+	-- Check if size changed
+	local sizeChanged = math.floor(pipWidth) ~= pipR2T.contentLastWidth or math.floor(pipHeight) ~= pipR2T.contentLastHeight
+
+	-- Check if rotation changed (rotation is baked into the texture)
+	local currentRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+	local rotChanged = pipR2T.contentRotation ~= currentRotation
+
+	-- Check if camera has drifted far enough to consume most of the margin
+	-- If so, force an immediate re-render to avoid showing the edge of the oversized texture
+	local driftForced = false
+	if pipR2T.contentZoom ~= 0 and margin > 0 then
+		local dx = cameraState.wcx - pipR2T.contentWcx
+		local dz = cameraState.wcz - pipR2T.contentWcz
+		-- Convert world drift to fraction of the margin's world-space coverage
+		-- Margin covers (margin * pipWidth / zoom) in world units per side
+		local marginWorldX = margin * pipWidth / cameraState.zoom
+		local marginWorldZ = margin * pipHeight / cameraState.zoom
+		if marginWorldX > 0 and marginWorldZ > 0 then
+			local driftFracX = math.abs(dx) / marginWorldX
+			local driftFracZ = math.abs(dz) / marginWorldZ
+			-- Also account for zoom drift: if zoomed in relative to stored, margin shrinks
+			local zoomRatio = cameraState.zoom / pipR2T.contentZoom
+			local effectiveDriftX = driftFracX * zoomRatio
+			local effectiveDriftZ = driftFracZ * zoomRatio
+			if effectiveDriftX > 0.7 or effectiveDriftZ > 0.7 then
+				driftForced = true
+			end
+		end
+	end
+
+	-- Check if should update based on time
+	-- During resize, sizeChanged defers to throttle instead of forcing immediate update
+	local timeSinceLastUpdate = currentTime - pipR2T.contentLastUpdateTime
+	local shouldUpdate = pipR2T.contentNeedsUpdate or rotChanged or driftForced or
+		(sizeChanged and not uiState.areResizing) or
+		pipUpdateInterval == 0 or
+		(pipUpdateInterval > 0 and timeSinceLastUpdate >= pipUpdateInterval)
+
+	if sizeChanged and not shouldUpdate then
 		pipR2T.contentNeedsUpdate = true
 	end
 
@@ -7115,8 +10939,8 @@ local function UpdateR2TContent(currentTime, pipUpdateInterval, pipWidth, pipHei
 		return
 	end
 
-	-- Only delete old texture when we're about to create a new one
-	if contentSizeChanged then
+	-- Delete old texture if size changed
+	if sizeChanged then
 		if pipR2T.contentTex then
 			gl.DeleteTexture(pipR2T.contentTex)
 			pipR2T.contentTex = nil
@@ -7125,38 +10949,67 @@ local function UpdateR2TContent(currentTime, pipUpdateInterval, pipWidth, pipHei
 		pipR2T.contentLastHeight = math.floor(pipHeight)
 	end
 
-	-- Create texture if needed
-	if not pipR2T.contentTex and pipWidth >= 1 and pipHeight >= 1 then
-		pipR2T.contentTex = gl.CreateTexture(math.floor(pipWidth), math.floor(pipHeight), {
+	-- Create oversized texture if needed
+	if not pipR2T.contentTex and cW >= 1 and cH >= 1 then
+		pipR2T.contentTex = gl.CreateTexture(cW, cH, {
 			target = GL.TEXTURE_2D, format = GL.RGBA, fbo = true,
 		})
+		pipR2T.contentTexWidth = cW
+		pipR2T.contentTexHeight = cH
 		pipR2T.contentLastWidth = math.floor(pipWidth)
 		pipR2T.contentLastHeight = math.floor(pipHeight)
 	end
 
 	if pipR2T.contentTex then
-		-- Get and store minimap rotation for coordinate transformations
-		render.minimapRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+		render.minimapRotation = currentRotation
 
 		gl.R2tHelper.RenderToTexture(pipR2T.contentTex, function()
 			glFunc.Translate(-1, -1, 0)
-			glFunc.Scale(2 / pipWidth, 2 / pipHeight, 0)
+			glFunc.Scale(2 / cW, 2 / cH, 0)
 
-			-- Reuse saved dimension tables
+			-- Fill entire texture with transparent background
+			-- (rotation leaves corners uncovered by the ground texture)
+			-- Use (0,0,0,0) for all cases: in premultiplied alpha compositing,
+			-- non-zero RGB with alpha=0 would be added (tinting) to the background
+			gl.Blending(false)
+			glFunc.Color(0, 0, 0, 0)
+			glFunc.Texture(false)
+			glFunc.BeginEnd(glConst.QUADS, DrawTexturedQuad, 0, 0, cW, cH)
+			glFunc.Color(1, 1, 1, 1)
+
+			-- Use separate blend for alpha: color blends normally, alpha accumulates
+			-- correctly for later premultiplied compositing (avoids water/overlay
+			-- reducing alpha and causing semi-transparency)
+			gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+			gl.BlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA)
+
+			-- Save current dimensions
 			pools.savedDim.l, pools.savedDim.r, pools.savedDim.b, pools.savedDim.t = render.dim.l, render.dim.r, render.dim.b, render.dim.t
-			pools.savedGround.view.l, pools.savedGround.view.r, pools.savedGround.view.b, pools.savedGround.view.t = render.ground.view.l, render.ground.view.r, render.ground.view.b, render.ground.view.t
-			pools.savedGround.coord.l, pools.savedGround.coord.r, pools.savedGround.coord.b, pools.savedGround.coord.t = render.ground.coord.l, render.ground.coord.r, render.ground.coord.b, render.ground.coord.t
 
-			render.dim.l, render.dim.b, render.dim.r, render.dim.t = 0, 0, pipWidth, pipHeight
+			-- Set oversized dims — contentScale = resScale so world bounds expand by (1+2*margin)
+			render.dim.l, render.dim.b, render.dim.r, render.dim.t = 0, 0, cW, cH
+			render.contentScale = resScale
 			RecalculateWorldCoordinates()
 			RecalculateGroundTextureCoordinates()
-			RenderPipContents()
 
+			-- Render cheap layers (ground, water, LOS)
+			local ok, err = pcall(RenderCheapLayers)
+			if not ok then
+				Spring.Echo("[PIP] Cheap layers render error: " .. tostring(err))
+			end
+
+			-- Restore
+			render.contentScale = 1
 			render.dim.l, render.dim.r, render.dim.b, render.dim.t = pools.savedDim.l, pools.savedDim.r, pools.savedDim.b, pools.savedDim.t
 			RecalculateWorldCoordinates()
-			render.ground.view.l, render.ground.view.r, render.ground.view.b, render.ground.view.t = pools.savedGround.view.l, pools.savedGround.view.r, pools.savedGround.view.b, pools.savedGround.view.t
-			render.ground.coord.l, render.ground.coord.r, render.ground.coord.b, render.ground.coord.t = pools.savedGround.coord.l, pools.savedGround.coord.r, pools.savedGround.coord.b, pools.savedGround.coord.t
+			RecalculateGroundTextureCoordinates()
 		end, true)
+
+		-- Store camera state for UV-shift in DrawScreen
+		pipR2T.contentWcx = cameraState.wcx
+		pipR2T.contentWcz = cameraState.wcz
+		pipR2T.contentZoom = cameraState.zoom
+		pipR2T.contentRotation = currentRotation
 		pipR2T.contentLastUpdateTime = currentTime
 		pipR2T.contentNeedsUpdate = false
 	end
@@ -7164,6 +11017,11 @@ end
 
 -- Update LOS texture with current Line-of-Sight information
 local function UpdateLOSTexture(currentTime)
+	-- In minimap mode, skip until ViewResize has initialized
+	if isMinimapMode and not minimapModeMinZoom then
+		return
+	end
+
 	-- Check if we should update LOS texture
 	local shouldShowLOS, losAllyTeam = ShouldShowLOS()
 	if not shouldShowLOS or not pipR2T.losTex then
@@ -7183,7 +11041,7 @@ local function UpdateLOSTexture(currentTime)
 			useEngineLOS = false
 		end
 	end
-
+	
 	-- Handle delay when switching to engine LOS
 	local actualUseEngineLOS = useEngineLOS
 	if useEngineLOS then
@@ -7192,7 +11050,7 @@ local function UpdateLOSTexture(currentTime)
 		if modeChanged then
 			pipR2T.losEngineDelayFrames = 2
 		end
-
+		
 		if pipR2T.losEngineDelayFrames > 0 then
 			pipR2T.losEngineDelayFrames = pipR2T.losEngineDelayFrames - 1
 			-- Continue using manual LOS during delay to avoid visual gap
@@ -7219,7 +11077,7 @@ local function UpdateLOSTexture(currentTime)
 	if not losAllyTeam or losAllyTeam < 0 then
 		return
 	end
-
+	
 	-- Check if we can actually query this allyTeam's LOS
 	-- Without fullview, we can only query our own allyTeam
 	if losAllyTeam ~= myAllyTeam then
@@ -7247,7 +11105,7 @@ local function UpdateLOSTexture(currentTime)
 
 				-- Activate shader to convert red channel to greyscale
 				gl.UseShader(losShader)
-
+				
 				-- Update shader uniforms (in case config changed)
 				gl.UniformFloat(gl.GetUniformLocation(losShader, "showRadar"), config.showLosRadar and 1.0 or 0.0)
 
@@ -7268,7 +11126,7 @@ local function UpdateLOSTexture(currentTime)
 				local baseBrightness = 1.0 - config.losOverlayOpacity
 				local darkestBrightness = baseBrightness * 0.5  -- Same as shader: grey * 0.5
 				local showRadar = config.showLosRadar
-
+				
 				if showRadar then
 					-- Start with darkest (no LOS, no radar)
 					gl.Clear(GL.COLOR_BUFFER_BIT, darkestBrightness, darkestBrightness, darkestBrightness, 1)
@@ -7279,7 +11137,7 @@ local function UpdateLOSTexture(currentTime)
 
 				local cellSizeX = mapInfo.mapSizeX / losTexWidth
 				local cellSizeZ = mapInfo.mapSizeZ / losTexHeight
-
+				
 				-- First pass: draw radar areas (medium brightness) if showRadar enabled
 				if showRadar then
 					glFunc.Color(baseBrightness, baseBrightness, baseBrightness, 1)
@@ -7305,7 +11163,7 @@ local function UpdateLOSTexture(currentTime)
 						end
 					end)
 				end
-
+				
 				-- Second pass: draw LOS areas (brightest)
 				glFunc.Color(1, 1, 1, 1)
 				glFunc.BeginEnd(glConst.QUADS, function()
@@ -7432,7 +11290,7 @@ local function HandleHoverAndCursor(mx, my)
 					if lastHoveredUnitID and not Spring.IsUnitAllied(lastHoveredUnitID) then
 						local allyTeam = Spring.GetUnitAllyTeam(lastHoveredUnitID)
 						local isNeutral = (allyTeam == gaiaAllyTeamID)
-
+						
 						-- Check if unit is visible (LOS or radar)
 						local checkAllyTeamID = cameraState.myAllyTeamID
 						if interactionState.trackingPlayerID and cameraState.mySpecState then
@@ -7441,7 +11299,7 @@ local function HandleHoverAndCursor(mx, my)
 						end
 						local losState = spFunc.GetUnitLosState(lastHoveredUnitID, checkAllyTeamID)
 						local isVisibleOrRadar = losState and (losState.los or losState.radar)
-
+						
 						if not isNeutral and isVisibleOrRadar then
 							-- Check if any selected unit can attack
 							for i = 1, #selectedUnits do
@@ -7453,7 +11311,7 @@ local function HandleHoverAndCursor(mx, my)
 							end
 						end
 					end
-
+					
 					-- Check if we have a transport and are hovering over a transportable unit
 					-- Use cached result from throttled check above
 					if lastHoveredUnitID and Spring.IsUnitAllied(lastHoveredUnitID) then
@@ -7492,7 +11350,7 @@ end
 -- Helper function to draw interactive overlays (buttons, pip number, etc.)
 local function DrawInteractiveOverlays(mx, my, usedButtonSize)
 	-- Draw pipNumber text only when hovering (and only for pip 2+)
-	if pipNumber ~= 1 and interactionState.isMouseOverPip then
+	if pipNumber > 1 and interactionState.isMouseOverPip then
 		glFunc.Color(config.panelBorderColorDark)
 		render.RectRound(render.dim.l, render.dim.t - render.usedButtonSize, render.dim.l + render.usedButtonSize, render.dim.t, render.elementCorner*0.4, 0, 0, 1, 0)
 		local fontSize = 14
@@ -7508,23 +11366,46 @@ local function DrawInteractiveOverlays(mx, my, usedButtonSize)
 	local selectedUnits = Spring.GetSelectedUnits()
 	local visibleButtons = {}
 	for i = 1, #buttons do
-		if buttons[i].command == 'pip_track' then
-			if #selectedUnits > 0 or interactionState.areTracking then
-				visibleButtons[#visibleButtons + 1] = buttons[i]
+		local btn = buttons[i]
+		-- In minimap mode, hide move button if configured
+		local skipButton = false
+		if isMinimapMode and config.minimapModeHideMoveResize then
+			if btn.tooltipKey == 'ui.pip.move' then
+				skipButton = true
 			end
-		elseif buttons[i].command == 'pip_trackplayer' then
-			local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
-			local aliveTeammates = GetAliveTeammates()
-			if interactionState.trackingPlayerID or spec or (#aliveTeammates > 0) then
-				visibleButtons[#visibleButtons + 1] = buttons[i]
+		end
+		-- In minimap mode, skip switch and copy buttons (keep pip_track and pip_trackplayer)
+		-- Allow pip_view for spectators with fullview
+		if isMinimapMode then
+			if btn.command == 'pip_switch' or btn.command == 'pip_copy' then
+				skipButton = true
+			elseif btn.command == 'pip_view' then
+				local _, fullview = Spring.GetSpectatingState()
+				if not fullview then
+					skipButton = true
+				end
 			end
-		elseif buttons[i].command == 'pip_view' then
-			local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
-			if spec then
-				visibleButtons[#visibleButtons + 1] = buttons[i]
+		end
+		
+		if not skipButton then
+			if btn.command == 'pip_track' then
+				if #selectedUnits > 0 or interactionState.areTracking then
+					visibleButtons[#visibleButtons + 1] = btn
+				end
+			elseif btn.command == 'pip_trackplayer' then
+				local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
+				local aliveTeammates = GetAliveTeammates()
+				if interactionState.trackingPlayerID or spec or (#aliveTeammates > 0) then
+					visibleButtons[#visibleButtons + 1] = btn
+				end
+			elseif btn.command == 'pip_view' then
+				local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
+				if spec then
+					visibleButtons[#visibleButtons + 1] = btn
+				end
+			else
+				visibleButtons[#visibleButtons + 1] = btn
 			end
-		else
-			visibleButtons[#visibleButtons + 1] = buttons[i]
 		end
 	end
 
@@ -7557,14 +11438,24 @@ local function DrawInteractiveOverlays(mx, my, usedButtonSize)
 		local bx = render.dim.l
 		for i = 1, #visibleButtons do
 			if mx >= bx and mx <= bx + render.usedButtonSize and my >= render.dim.b and my <= render.dim.b + render.usedButtonSize then
-				if visibleButtons[i].tooltip and WG['tooltip'] then
-					local tooltipText = visibleButtons[i].tooltip
-					if visibleButtons[i].tooltipActive then
+				if visibleButtons[i].tooltipKey and WG['tooltip'] then
+					local tooltipKey = visibleButtons[i].tooltipKey
+					if visibleButtons[i].tooltipActiveKey then
 						if (visibleButtons[i].command == 'pip_track' and interactionState.areTracking) or
 						   (visibleButtons[i].command == 'pip_trackplayer' and interactionState.trackingPlayerID) or
 						   (visibleButtons[i].command == 'pip_view' and state.losViewEnabled) then
-							tooltipText = visibleButtons[i].tooltipActive
+							tooltipKey = visibleButtons[i].tooltipActiveKey
 						end
+					end
+					-- Generate tooltip with shortcut key on new line if available
+					local tooltipText = Spring.I18N(tooltipKey)
+					-- Use button's shortcut field first, fall back to getActionHotkey
+					local shortcut = visibleButtons[i].shortcut
+					if not shortcut and visibleButtons[i].command then
+						shortcut = getActionHotkey(visibleButtons[i].command)
+					end
+					if shortcut and shortcut ~= "" then
+						tooltipText = tooltipText .. "\n" .. shortcut
 					end
 					WG['tooltip'].ShowTooltip('pip'..pipNumber, tooltipText, nil, nil, nil)
 				end
@@ -7593,7 +11484,6 @@ local function DrawInteractiveOverlays(mx, my, usedButtonSize)
 end
 
 function widget:DrawScreen()
-
 	local mx, my, mbl = spFunc.GetMouseState()
 
 	-- During animation, disable mouse interaction
@@ -7601,7 +11491,13 @@ function widget:DrawScreen()
 		mx, my = -1, -1  -- Force mouse out of bounds during animation
 	end
 
-	if uiState.inMinMode and not uiState.isAnimating then
+	-- In minimap mode, skip all rendering until ViewResize has completed initialization
+	if isMinimapMode and not minimapModeMinZoom then
+		return
+	end
+
+	-- In minimap mode, never show minimized state (skip this whole section)
+	if uiState.inMinMode and not uiState.isAnimating and not isMinimapMode then
 		-- Use display list for minimized mode (static graphics with relative coordinates)
 		local buttonSize = math.floor(render.usedButtonSize*config.maximizeSizemult)
 
@@ -7610,25 +11506,38 @@ function widget:DrawScreen()
 
 		-- Then draw icon on top using display list
 		local offset = render.elementPadding + 2	-- to prevent touching screen edges and FlowUI Element will remove borders
-
+		
 		-- Check if we need to recreate display list due to position change (affects rotation)
 		local sw, sh = Spring.GetWindowGeometry()
 		local currentQuadrant = (uiState.minModeL < sw * 0.5 and 1 or 2) + (uiState.minModeB < sh * 0.25 and 0 or 2)
-		if render.minModeQuadrant ~= currentQuadrant and render.minModeDlist then
+		-- Also track edge state for chamfered corners
+		local actualL = uiState.minModeL - render.elementPadding
+		local actualB = uiState.minModeB - render.elementPadding
+		local actualR = uiState.minModeL + buttonSize + render.elementPadding
+		local actualT = uiState.minModeB + buttonSize + render.elementPadding
+		local currentEdgeState = (actualL <= 0 and 1 or 0) + (actualB <= 0 and 2 or 0) + (actualR >= render.vsx and 4 or 0) + (actualT >= render.vsy and 8 or 0)
+		if (render.minModeQuadrant ~= currentQuadrant or render.minModeEdgeState ~= currentEdgeState) and render.minModeDlist then
 			gl.DeleteList(render.minModeDlist)
 			render.minModeDlist = nil
 		end
 		render.minModeQuadrant = currentQuadrant
-
+		render.minModeEdgeState = currentEdgeState
+		
 		if not render.minModeDlist then
 			render.minModeDlist = gl.CreateList(function()
 				-- Draw render.UiElement background (only borders, no fill to avoid double opacity)
-				render.UiElement(offset-render.elementPadding, offset-render.elementPadding, offset+buttonSize+render.elementPadding, offset+buttonSize+render.elementPadding, 1, 1, 1, 1, nil, nil, nil, nil, nil, nil, nil, nil)
+				-- Compute actual screen coordinates for chamfered corners
+				local actualL = uiState.minModeL - render.elementPadding
+				local actualB = uiState.minModeB - render.elementPadding
+				local actualR = uiState.minModeL + buttonSize + render.elementPadding
+				local actualT = uiState.minModeB + buttonSize + render.elementPadding
+				local tl, tr, br, bl = GetChamferedCorners(actualL, actualB, actualR, actualT)
+				render.UiElement(offset-render.elementPadding, offset-render.elementPadding, offset+buttonSize+render.elementPadding, offset+buttonSize+render.elementPadding, tl, tr, br, bl, nil, nil, nil, nil, nil, nil, nil, nil)
 
 				-- Draw icon at origin (0,0) - will be transformed to actual position
 				glFunc.Color(config.panelBorderColorLight)
 				glFunc.Texture('LuaUI/Images/pip/PipExpand.png')
-
+				
 				-- Rotate icon based on expansion direction
 				local rotation = GetMaximizeIconRotation()
 				local centerX = offset + buttonSize * 0.5
@@ -7637,7 +11546,7 @@ function widget:DrawScreen()
 				glFunc.Translate(centerX, centerY, 0)
 				glFunc.Rotate(rotation, 0, 0, 1)
 				glFunc.Translate(-centerX, -centerY, 0)
-
+				
 				glFunc.TexRect(offset, offset, offset+buttonSize, offset+buttonSize)
 				glFunc.PopMatrix()
 				glFunc.Texture(false)
@@ -7697,13 +11606,39 @@ function widget:DrawScreen()
 		-- Update LOS texture
 		UpdateLOSTexture(currentTime)
 
-		-- Measure time to render
+		-- Update oversized units texture at throttled rate (expensive layers)
 		local drawStartTime = os.clock()
-		UpdateR2TContent(currentTime, pipUpdateInterval, pipWidth, pipHeight)
-		pipR2T.contentLastDrawTime = os.clock() - drawStartTime
+		local prevUnitsTime = pipR2T.unitsLastUpdateTime
+		UpdateR2TUnits(currentTime, pipUpdateInterval, pipWidth, pipHeight)
+
+		-- Update oversized cheap layers texture at throttled rate
+		local prevContentTime = pipR2T.contentLastUpdateTime
+		UpdateR2TCheapLayers(currentTime, pipUpdateInterval, pipWidth, pipHeight)
+
+		-- Only record draw time when actual rendering occurred (not throttled no-ops)
+		local didRender = pipR2T.unitsLastUpdateTime ~= prevUnitsTime or pipR2T.contentLastUpdateTime ~= prevContentTime
+		if didRender then
+			local drawTime = os.clock() - drawStartTime
+			pipR2T.contentLastDrawTime = drawTime
+		
+			-- Add to frame time history (ring buffer of last N frames)
+			pipR2T.contentDrawTimeHistoryIndex = (pipR2T.contentDrawTimeHistoryIndex % config.pipFrameTimeHistorySize) + 1
+			pipR2T.contentDrawTimeHistory[pipR2T.contentDrawTimeHistoryIndex] = drawTime
+		
+			-- Calculate average of frame times
+			local sum = 0
+			local count = 0
+			for i = 1, config.pipFrameTimeHistorySize do
+				if pipR2T.contentDrawTimeHistory[i] then
+					sum = sum + pipR2T.contentDrawTimeHistory[i]
+					count = count + 1
+				end
+			end
+			pipR2T.contentDrawTimeAverage = count > 0 and (sum / count) or 0
+		end
 
 		-- Update content mask display list if dimensions or position changed
-		local maskNeedsUpdate = (math.floor(pipWidth) ~= pipR2T.contentMaskLastWidth or
+		local maskNeedsUpdate = (math.floor(pipWidth) ~= pipR2T.contentMaskLastWidth or 
 								 math.floor(pipHeight) ~= pipR2T.contentMaskLastHeight or
 								 math.floor(render.dim.l) ~= pipR2T.contentMaskLastL or
 								 math.floor(render.dim.b) ~= pipR2T.contentMaskLastB)
@@ -7714,8 +11649,27 @@ function widget:DrawScreen()
 			pipR2T.contentMaskDlist = gl.CreateList(function()
 				-- Draw rounded rectangle shape for stencil mask
 				-- Use slightly larger corner radius so diagonal border looks same thickness as straight edges
-				render.RectRound(render.dim.l, render.dim.b, render.dim.r, render.dim.t, render.elementCorner * 0.5, 1, 1, 1, 1)
+				-- Disable corner rounding at screen edges
+				local edgeTolerance = 2
+				local atLeft = render.dim.l <= edgeTolerance
+				local atRight = render.dim.r >= render.vsx - edgeTolerance
+				local atBottom = render.dim.b <= edgeTolerance
+				local atTop = render.dim.t >= render.vsy - edgeTolerance
+				local tl = (atLeft or atTop) and 0 or 1
+				local tr = (atRight or atTop) and 0 or 1
+				local br = (atRight or atBottom) and 0 or 1
+				local bl = (atLeft or atBottom) and 0 or 1
+				render.RectRound(render.dim.l, render.dim.b, render.dim.r, render.dim.t, render.elementCorner * 0.5, tl, tr, br, bl)
 			end)
+			-- Also invalidate text display lists when position changes
+			if pipR2T.resbarTextDlist then
+				gl.DeleteList(pipR2T.resbarTextDlist)
+				pipR2T.resbarTextDlist = nil
+			end
+			if pipR2T.playerNameDlist then
+				gl.DeleteList(pipR2T.playerNameDlist)
+				pipR2T.playerNameDlist = nil
+			end
 			pipR2T.contentMaskLastWidth = math.floor(pipWidth)
 			pipR2T.contentMaskLastHeight = math.floor(pipHeight)
 			pipR2T.contentMaskLastL = math.floor(render.dim.l)
@@ -7730,30 +11684,201 @@ function widget:DrawScreen()
 			gl.StencilFunc(GL.ALWAYS, 1, 0xFF)  -- Always pass, write 1 to stencil buffer
 			gl.StencilOp(GL.KEEP, GL.KEEP, GL.REPLACE)  -- Replace stencil value where we draw
 			gl.ColorMask(false, false, false, false)  -- Don't draw to color buffer
-
+			
 			-- Draw the rounded mask shape into stencil buffer
 			if pipR2T.contentMaskDlist then
 				gl.CallList(pipR2T.contentMaskDlist)
 			end
-
+			
 			-- Now draw content only where stencil == 1
 			gl.ColorMask(true, true, true, true)  -- Enable color writes
 			gl.StencilFunc(GL.EQUAL, 1, 0xFF)  -- Only draw where stencil == 1
 			gl.StencilOp(GL.KEEP, GL.KEEP, GL.KEEP)  -- Don't modify stencil buffer
+			
+			-- Reset GL state — mask drawing dirties color/blending state
+			glFunc.Color(1, 1, 1, 1)
+			gl.Blending(GL.ONE, GL.ONE_MINUS_SRC_ALPHA)  -- Premultiplied alpha: opaque map shows fully, transparent off-map areas pass through
 
-			gl.R2tHelper.BlendTexRect(pipR2T.contentTex, render.dim.l, render.dim.b, render.dim.r, render.dim.t, true)
+			-- Blit oversized content texture (cheap layers: ground, water, LOS) with camera shift
+			BlitShiftedTexture(pipR2T.contentTex, pipR2T.contentTexWidth, pipR2T.contentTexHeight,
+				pipR2T.contentWcx, pipR2T.contentWcz, pipR2T.contentZoom, pipR2T.contentRotation)
 
+			-- Blit oversized units texture (expensive layers: units, features, projectiles)
+			-- Uses premultiplied alpha: FBO was rendered with BlendFuncSeparate for correct alpha
+			if pipR2T.unitsTex then
+				gl.Blending(GL.ONE, GL.ONE_MINUS_SRC_ALPHA)
+				BlitShiftedTexture(pipR2T.unitsTex, pipR2T.unitsTexWidth, pipR2T.unitsTexHeight,
+					pipR2T.unitsWcx, pipR2T.unitsWcz, pipR2T.unitsZoom, pipR2T.unitsRotation)
+			end
+			gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)  -- Explicitly restore blend func
+
+			-- Blit map ruler directly to screen (not in oversized texture — rulers are edge-fixed)
+			if uiState.drawingGround and config.showMapRuler then
+				local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
+				if not spec then
+					UpdateMapRulerTexture()
+					if pipR2T.rulerTex then
+						gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+						gl.R2tHelper.BlendTexRect(pipR2T.rulerTex, render.dim.l, render.dim.b, render.dim.r, render.dim.t, true)
+						gl.Blending(true)
+					end
+				end
+			end
+			
 			-- Disable stencil test
 			gl.StencilTest(false)
-		end
-
-		-- Draw map ruler at edges (only when not spectating)
-		if config.showMapRuler then
-			local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
-			if not spec then
-				DrawMapRuler()
+			
+			-- Draw minimap overlays from other widgets (only in minimap mode)
+			-- This is done here in DrawScreen (not in R2T) because matrix manipulation works correctly here
+			if isMinimapMode and WG['minimap'] and widgetHandler and widgetHandler.DrawInMiniMapList then
+				local minimapWidth = render.dim.r - render.dim.l
+				local minimapHeight = render.dim.t - render.dim.b
+				
+				-- Get the world coordinates visible in the PIP
+				local worldL, worldR, worldB, worldT = render.world.l, render.world.r, render.world.b, render.world.t
+				
+				-- Use scissor to clip to PIP area
+				gl.Scissor(render.dim.l, render.dim.b, minimapWidth, minimapHeight)
+				
+				-- Set a flag that widgets can check during their DrawInMiniMap
+				WG['minimap'].isDrawingInPip = true
+				
+				-- Update module-level upvalues for the minimap API functions (avoids per-frame closures)
+				-- For shaders: pass in world-normalized coords (NOT Y-flipped), shaders do their own flip
+				minimapApiNormLeft = worldL / mapInfo.mapSizeX
+				minimapApiNormRight = worldR / mapInfo.mapSizeX
+				minimapApiNormBottom = worldB / mapInfo.mapSizeZ  -- world Z coords, shader will flip
+				minimapApiNormTop = worldT / mapInfo.mapSizeZ
+				minimapApiZoomLevel = mapInfo.mapSizeX / (worldR - worldL)
+				
+				-- Expose pre-created functions (no per-frame allocation)
+				WG['minimap'].getNormalizedVisibleArea = minimapApiGetNormalizedVisibleArea
+				WG['minimap'].getZoomLevel = minimapApiGetZoomLevel
+				
+				-- Compute rotation-aware ortho bounds for fixed-function GL widgets.
+				-- Widgets handle rotation themselves via getCurrentMiniMapRotationOption(),
+				-- so we do NOT apply GL rotation. Instead we compute ortho bounds that match
+				-- each rotation's pixel coordinate mapping.
+				--
+				-- Widget pixel coordinate conventions per rotation:
+				--   DEG_0:   pixelX = worldX/mapX * sx,            pixelY = sz - worldZ/mapZ * sz
+				--   DEG_90:  pixelX = worldZ/mapZ * sx,            pixelY = worldX/mapX * sz
+				--   DEG_180: pixelX = sx - worldX/mapX * sx,       pixelY = worldZ/mapZ * sz
+				--   DEG_270: pixelX = sx - worldZ/mapZ * sx,       pixelY = sz - worldX/mapX * sz
+				--
+				-- We compute the ortho bounds [left, right, bottom, top] so that the pixel
+				-- range corresponding to the visible world area maps to the full viewport.
+				
+				local rotCategory = 0
+				if render.minimapRotation then
+					rotCategory = math.floor((render.minimapRotation / math.pi * 2 + 0.5) % 4)
+				end
+				
+				local visPixelLeft, visPixelRight, visPixelTop, visPixelBottom
+				if rotCategory == 1 then -- 90°
+					visPixelLeft   = worldT / mapInfo.mapSizeZ * minimapWidth
+					visPixelRight  = worldB / mapInfo.mapSizeZ * minimapWidth
+					visPixelBottom = worldL / mapInfo.mapSizeX * minimapHeight
+					visPixelTop    = worldR / mapInfo.mapSizeX * minimapHeight
+				elseif rotCategory == 2 then -- 180°
+					visPixelLeft   = (1 - worldR / mapInfo.mapSizeX) * minimapWidth
+					visPixelRight  = (1 - worldL / mapInfo.mapSizeX) * minimapWidth
+					visPixelTop    = worldB / mapInfo.mapSizeZ * minimapHeight
+					visPixelBottom = worldT / mapInfo.mapSizeZ * minimapHeight
+				elseif rotCategory == 3 then -- 270°
+					visPixelLeft   = (1 - worldB / mapInfo.mapSizeZ) * minimapWidth
+					visPixelRight  = (1 - worldT / mapInfo.mapSizeZ) * minimapWidth
+					visPixelBottom = (1 - worldR / mapInfo.mapSizeX) * minimapHeight
+					visPixelTop    = (1 - worldL / mapInfo.mapSizeX) * minimapHeight
+				else -- 0° (default)
+					visPixelLeft   = worldL / mapInfo.mapSizeX * minimapWidth
+					visPixelRight  = worldR / mapInfo.mapSizeX * minimapWidth
+					visPixelTop    = (1 - worldT / mapInfo.mapSizeZ) * minimapHeight
+					visPixelBottom = (1 - worldB / mapInfo.mapSizeZ) * minimapHeight
+				end
+				
+				for _, w in ipairs(widgetHandler.DrawInMiniMapList) do
+					if w ~= widget then  -- Don't recursively call ourselves
+						-- Save current matrices
+						gl.MatrixMode(GL.PROJECTION)
+						glFunc.PushMatrix()
+						gl.LoadIdentity()
+						
+						-- Ortho maps the visible pixel range to NDC [-1,1], which maps to viewport.
+						-- bottom > top flips Y so widget Y-down coords map correctly to screen.
+						gl.Ortho(visPixelLeft, visPixelRight, visPixelBottom, visPixelTop, -1, 1)
+						
+						gl.MatrixMode(GL.MODELVIEW)
+						glFunc.PushMatrix()
+						gl.LoadIdentity()
+						
+						-- Set viewport to PIP area so NDC [-1,1] maps to our PIP screen coords
+						gl.Viewport(render.dim.l, render.dim.b, minimapWidth, minimapHeight)
+						
+						-- Direct call instead of pcall closure to avoid per-widget per-frame allocations
+						-- Errors will propagate but that's acceptable for performance
+						local drawFunc = w.DrawInMiniMap
+						if drawFunc then
+							drawFunc(w, minimapWidth, minimapHeight)
+						end
+						
+						-- Restore viewport to full screen
+						gl.Viewport(0, 0, render.vsx, render.vsy)
+						
+						-- Restore matrices
+						glFunc.PopMatrix()
+						gl.MatrixMode(GL.PROJECTION)
+						glFunc.PopMatrix()
+						gl.MatrixMode(GL.MODELVIEW)
+					end
+				end
+				
+				-- Clear the flag and disable scissor
+				WG['minimap'].isDrawingInPip = false
+				gl.Scissor(false)
+				
+				-- Reset GL state that widgets may have left dirty
+				glFunc.Texture(false)
+				glFunc.Color(1, 1, 1, 1)
+				gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+				gl.DepthTest(false)
+				gl.DepthMask(false)
+				gl.Culling(false)
+				gl.PolygonMode(GL.FRONT_AND_BACK, GL.FILL)
+				gl.LineWidth(1.0)
+				-- Reset stencil state (attack range widget uses stencil)
+				gl.StencilTest(false)
+				gl.StencilMask(255)
+				gl.StencilOp(GL.KEEP, GL.KEEP, GL.KEEP)
+				gl.ColorMask(true, true, true, true)
 			end
 		end
+	end
+
+	-- Draw map markers and camera view bounds at full frame rate (not throttled with unitsTex)
+	-- Drawn after DrawInMiniMap overlays so they appear on top of everything
+	if isMinimapMode then
+		local minimapWidth = render.dim.r - render.dim.l
+		local minimapHeight = render.dim.t - render.dim.b
+		gl.Scissor(render.dim.l, render.dim.b, minimapWidth, minimapHeight)
+
+		if render.minimapRotation ~= 0 then
+			local centerX = render.dim.l + minimapWidth / 2
+			local centerY = render.dim.b + minimapHeight / 2
+			glFunc.PushMatrix()
+			glFunc.Translate(centerX, centerY, 0)
+			glFunc.Rotate(render.minimapRotation * 180 / math.pi, 0, 0, 1)
+			glFunc.Translate(-centerX, -centerY, 0)
+		end
+
+		DrawMapMarkers()
+		DrawCameraViewBounds()
+
+		if render.minimapRotation ~= 0 then
+			glFunc.PopMatrix()
+		end
+
+		gl.Scissor(false)
 	end
 
 	-- Draw tracking indicators
@@ -7771,109 +11896,127 @@ function widget:DrawScreen()
 			gl.R2tHelper.BlendTexRect(pipR2T.frameButtonsTex, render.dim.l, render.dim.b, render.dim.r, render.dim.t, true)
 		end
 
-		-- Draw resize handle when showing on hover
-		if config.showButtonsOnHoverOnly and interactionState.isMouseOverPip then
+		-- Draw resize handle when showing on hover (hide in minimap mode if configured)
+		if config.showButtonsOnHoverOnly and interactionState.isMouseOverPip and not (isMinimapMode and config.minimapModeHideMoveResize) then
 			glFunc.Color(config.panelBorderColorDark)
 			glFunc.LineWidth(1.0)
 			glFunc.BeginEnd(glConst.TRIANGLES, ResizeHandleVertices)
 		end
 
 		-- Draw dynamic hover overlays
-		-- Resize handle hover
-		local hover = uiState.areResizing or false
-		if mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t then
-			if (render.dim.r-mx + my-render.dim.b <= render.usedButtonSize) then
-				hover = true
-				if WG['tooltip'] then
-					WG['tooltip'].ShowTooltip('pip'..pipNumber, 'Resize', nil, nil, nil)
+		-- Resize handle hover (skip in minimap mode if configured)
+		local hover = false
+		if not (isMinimapMode and config.minimapModeHideMoveResize) then
+			hover = uiState.areResizing or false
+			if mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t then
+				if (render.dim.r-mx + my-render.dim.b <= render.usedButtonSize) then
+					hover = true
+					if WG['tooltip'] then
+						WG['tooltip'].ShowTooltip('pip'..pipNumber, Spring.I18N('ui.pip.resize'), nil, nil, nil)
+					end
 				end
 			end
-		end
-		if hover then
-			local mult = mbl and 4.5 or 1.5
-			glFunc.Color(config.panelBorderColorDark[1]*mult, config.panelBorderColorDark[2]*mult, config.panelBorderColorDark[3]*mult, 1)
-			glFunc.LineWidth(1.0)
-			glFunc.BeginEnd(glConst.TRIANGLES, ResizeHandleVertices)
-		end
-
-		-- Minimize button hover
-		hover = false
-		if config.showButtonsOnHoverOnly and interactionState.isMouseOverPip then
-			-- Draw minimize button base when showing on hover
-			glFunc.Color(config.panelBorderColorDark)
-			glFunc.Texture(false)
-			render.RectRound(render.dim.r - render.usedButtonSize - render.elementPadding, render.dim.t - render.usedButtonSize - render.elementPadding, render.dim.r, render.dim.t, render.elementCorner, 0, 0, 0, 1)
-			glFunc.Color(config.panelBorderColorLight)
-			glFunc.Texture('LuaUI/Images/pip/PipShrink.png')
-
-			-- Rotate icon opposite to maximize direction (points toward shrink position)
-			local rotation = GetMaximizeIconRotation()
-			local centerX = render.dim.r - render.usedButtonSize * 0.5
-			local centerY = render.dim.t - render.usedButtonSize * 0.5
-			glFunc.PushMatrix()
-			glFunc.Translate(centerX, centerY, 0)
-			glFunc.Rotate(rotation, 0, 0, 1)
-			glFunc.Translate(-centerX, -centerY, 0)
-
-			glFunc.TexRect(render.dim.r - render.usedButtonSize, render.dim.t - render.usedButtonSize, render.dim.r, render.dim.t)
-			glFunc.PopMatrix()
-			glFunc.Texture(false)
-		end
-		if mx >= render.dim.r - render.usedButtonSize - render.elementPadding and mx <= render.dim.r - render.elementPadding and
-			my >= render.dim.t - render.usedButtonSize - render.elementPadding and my <= render.dim.t - render.elementPadding then
-			hover = true
-			if WG['tooltip'] then
-				WG['tooltip'].ShowTooltip('pip'..pipNumber, 'Minimize', nil, nil, nil)
+			if hover then
+				local mult = mbl and 4.5 or 1.5
+				glFunc.Color(config.panelBorderColorDark[1]*mult, config.panelBorderColorDark[2]*mult, config.panelBorderColorDark[3]*mult, 1)
+				glFunc.LineWidth(1.0)
+				glFunc.BeginEnd(glConst.TRIANGLES, ResizeHandleVertices)
 			end
-			glFunc.Color(1,1,1,0.12)
-			glFunc.Texture(false)
-			render.RectRound(render.dim.r - render.usedButtonSize, render.dim.t - render.usedButtonSize, render.dim.r, render.dim.t, render.elementCorner*0.4, 1, 1, 1, 1)
-			glFunc.Color(1, 1, 1, 1)
-			glFunc.Texture('LuaUI/Images/pip/PipShrink.png')
+		end
 
-			-- Rotate icon opposite to maximize direction (points toward shrink position)
-			local rotation = GetMaximizeIconRotation()
-			local centerX = render.dim.r - render.usedButtonSize * 0.5
-			local centerY = render.dim.t - render.usedButtonSize * 0.5
-			glFunc.PushMatrix()
-			glFunc.Translate(centerX, centerY, 0)
-			glFunc.Rotate(rotation, 0, 0, 1)
-			glFunc.Translate(-centerX, -centerY, 0)
-
-			glFunc.TexRect(render.dim.r - render.usedButtonSize, render.dim.t - render.usedButtonSize, render.dim.r, render.dim.t)
-			glFunc.PopMatrix()
-			glFunc.Texture(false)
+		-- Minimize button hover (skip in minimap mode)
+		hover = false
+		if not isMinimapMode or config.minimapModeShowButtons then
+			if config.showButtonsOnHoverOnly and interactionState.isMouseOverPip then
+				-- Draw minimize button base when showing on hover
+				glFunc.Color(config.panelBorderColorDark)
+				glFunc.Texture(false)
+				render.RectRound(render.dim.r - render.usedButtonSize - render.elementPadding, render.dim.t - render.usedButtonSize - render.elementPadding, render.dim.r, render.dim.t, render.elementCorner, 0, 0, 0, 1)
+				glFunc.Color(config.panelBorderColorLight)
+				glFunc.Texture('LuaUI/Images/pip/PipShrink.png')
+				
+				-- Rotate icon opposite to maximize direction (points toward shrink position)
+				local rotation = GetMaximizeIconRotation()
+				local centerX = render.dim.r - render.usedButtonSize * 0.5
+				local centerY = render.dim.t - render.usedButtonSize * 0.5
+				glFunc.PushMatrix()
+				glFunc.Translate(centerX, centerY, 0)
+				glFunc.Rotate(rotation, 0, 0, 1)
+				glFunc.Translate(-centerX, -centerY, 0)
+				
+				glFunc.TexRect(render.dim.r - render.usedButtonSize, render.dim.t - render.usedButtonSize, render.dim.r, render.dim.t)
+				glFunc.PopMatrix()
+				glFunc.Texture(false)
+			end
+			if mx >= render.dim.r - render.usedButtonSize - render.elementPadding and mx <= render.dim.r - render.elementPadding and
+				my >= render.dim.t - render.usedButtonSize - render.elementPadding and my <= render.dim.t - render.elementPadding then
+				hover = true
+				if WG['tooltip'] then
+					WG['tooltip'].ShowTooltip('pip'..pipNumber, Spring.I18N('ui.pip.minimize'), nil, nil, nil)
+				end
+				glFunc.Color(1,1,1,0.12)
+				glFunc.Texture(false)
+				render.RectRound(render.dim.r - render.usedButtonSize, render.dim.t - render.usedButtonSize, render.dim.r, render.dim.t, render.elementCorner*0.4, 1, 1, 1, 1)
+				glFunc.Color(1, 1, 1, 1)
+				glFunc.Texture('LuaUI/Images/pip/PipShrink.png')
+				
+				-- Rotate icon opposite to maximize direction (points toward shrink position)
+				local rotation = GetMaximizeIconRotation()
+				local centerX = render.dim.r - render.usedButtonSize * 0.5
+				local centerY = render.dim.t - render.usedButtonSize * 0.5
+				glFunc.PushMatrix()
+				glFunc.Translate(centerX, centerY, 0)
+				glFunc.Rotate(rotation, 0, 0, 1)
+				glFunc.Translate(-centerX, -centerY, 0)
+				
+				glFunc.TexRect(render.dim.r - render.usedButtonSize, render.dim.t - render.usedButtonSize, render.dim.r, render.dim.t)
+				glFunc.PopMatrix()
+				glFunc.Texture(false)
+			end
 		end
 
 		-- Bottom-left buttons hover and pip number
 		DrawInteractiveOverlays(mx, my, render.usedButtonSize)
 	end
 
-	-- Display tracked player name at top-center of PIP (only when hovering)
-	DrawTrackedPlayerName()
+	if not uiState.isAnimating then
+		-- Display tracked player name at top-center of PIP (only when hovering)
+		DrawTrackedPlayerName()
 
-	-- Display current max update rate (top-left corner)
-	if showPipFps then
-		local fontSize = 11
-		local padding = 8
-		font:Begin()
-		font:SetTextColor(0.85, 0.85, 0.85, 1)
-		font:SetOutlineColor(0, 0, 0, 0.5)
-		font:Print(string.format("%.0f FPS", pipR2T.contentCurrentUpdateRate), render.dim.l + padding, render.dim.t - (fontSize*1.6) - padding, fontSize*2, "no")
-		font:End()
+		-- Display resource bars when tracking a player camera (hidden when PIP is hovered)
+		DrawTrackedPlayerResourceBars()
+
+		-- Display minimap overlay when tracking a player camera (hidden when PIP is hovered)
+		DrawTrackedPlayerMinimap()
+
+		-- Draw box selection rectangle
+		DrawBoxSelection()
+
+		-- Draw area command circle
+		DrawAreaCommand()
+
+		-- Draw build cursor with rotation applied
+		DrawBuildCursorWithRotation()
+
+		-- Draw formation dots overlay (command queues are now in R2T)
+		DrawFormationDotsOverlay()
+
+		-- Display current max update rate (top-left corner)
+		if config.showPipFps then
+			local fontSize = 12
+			local padding = 12
+			font:Begin()
+			font:SetTextColor(0.85, 0.85, 0.85, 1)
+			font:SetOutlineColor(0, 0, 0, 0.5)
+			font:Print(string.format("%.0f FPS", pipR2T.contentCurrentUpdateRate)..'\n'..pipR2T.contentDrawTimeAverage, render.dim.l + padding, render.dim.t - (fontSize*1.6) - padding, fontSize*2, "no")
+			font:End()
+		end
 	end
 
-	-- Draw box selection rectangle
-	DrawBoxSelection()
-
-	-- Draw area command circle
-	DrawAreaCommand()
-
-	-- Draw build cursor with rotation applied
-	DrawBuildCursorWithRotation()
-
-	-- Draw formation dots overlay (command queues are now in R2T)
-	DrawFormationDotsOverlay()
+	-- Note: In minimap mode, we don't call gl.DrawMiniMap() because it would render the engine
+	-- minimap terrain on top of our PIP. The engine minimap is minimized instead.
+	-- DrawInMiniMap overlays from other widgets are handled in RenderPipContents() during R2T.
+	-- Widgets can check WG['minimap'].isPipMinimapActive() or WG['minimap'].isDrawingInPip to adapt.
 
 	glFunc.Color(1, 1, 1, 1)
 end
@@ -7881,8 +12024,9 @@ end
 function widget:DrawWorld()
 	-- When fully minimized (not animating), draw maximize icon at PIP camera location
 	-- Don't show if tracking player camera, or if spectator (unless showWorldIconForSpectators is enabled)
-	local shouldShowWorldIcon = config.showWorldIcon and not interactionState.trackingPlayerID and
-		(not cameraState.mySpecState or config.showWorldIconForSpectators)
+	-- Also don't show before game starts
+	local shouldShowWorldIcon = config.showWorldIcon and not interactionState.trackingPlayerID and 
+		(not cameraState.mySpecState or config.showWorldIconForSpectators) and gameHasStarted
 	if uiState.inMinMode and not uiState.isAnimating and shouldShowWorldIcon then
 		local alt = Spring.GetModKeyState()
 		local iconSize = 16  -- World units
@@ -7890,7 +12034,7 @@ function widget:DrawWorld()
 		local iconX = miscState.worldIconLockedX or cameraState.wcx
 		local iconZ = miscState.worldIconLockedZ or cameraState.wcz
 		local iconY = math.max(spFunc.GetGroundHeight(iconX, iconZ), 0) + 2  -- Above water level
-
+		
 		-- Calculate distance-based opacity (fade in when cursor approaches)
 		-- Use 18% of vertical screen height as the fade distance
 		local fadeDistance = render.vsy * 0.18
@@ -7905,18 +12049,18 @@ function widget:DrawWorld()
 				distanceOpacityMult = 1 - (screenDist / fadeDistance)
 			end
 		end
-
+		
 		-- Skip drawing entirely if too far away
 		if distanceOpacityMult <= 0 then
 			return
 		end
-
+		
 		-- Draw octagon border around icon (same style as PIP boundary but more distant)
 		local innerLineDist = 8
 		local cornerSize = 11 * 0.6  -- 60% of normal corner size
 		local lineWidthMult = 0.66 + (render.vsy / 4000)
 		local borderDist = iconSize + 16  -- More distance from icon
-
+		
 		-- Use team color if we were tracking a player, otherwise white
 		local r, g, b = 1, 1, 1
 		if interactionState.trackingPlayerID then
@@ -7925,9 +12069,9 @@ function widget:DrawWorld()
 				r, g, b = Spring.GetTeamColor(teamID)
 			end
 		end
-
+		
 		gl.DepthTest(false)
-
+		
 		-- Draw border octagons (same opacity as non-minimized PIP boundary, scaled by distance)
 		glFunc.LineWidth(7*lineWidthMult)
 		glFunc.Color(0, 0, 0, 0.05 * distanceOpacityMult)
@@ -7939,14 +12083,14 @@ function widget:DrawWorld()
 		glFunc.BeginEnd(glConst.LINE_STRIP, DrawGroundBox, iconX - borderDist, iconX + borderDist, iconZ - borderDist, iconZ + borderDist, cornerSize)
 		glFunc.Color(r, g, b, 0.045 * distanceOpacityMult)
 		glFunc.BeginEnd(glConst.LINE_STRIP, DrawGroundBox, iconX - borderDist + innerLineDist, iconX + borderDist - innerLineDist, iconZ - borderDist + innerLineDist, iconZ + borderDist - innerLineDist, cornerSize*0.65)
-
+		
 		-- Draw maximize icon (flat on ground, facing up)
 		local iconOpacity = 0.2
 		if interactionState.worldMaximizeIconHovered then
 			iconOpacity = alt and 0.95 or 0.35
 		end
 		iconOpacity = iconOpacity * distanceOpacityMult
-
+		
 		glFunc.Color(1, 1, 1, iconOpacity)
 		glFunc.Texture('LuaUI/Images/pip/PipMaximize.png')
 		glFunc.BeginEnd(GL.QUADS, function()
@@ -7961,10 +12105,10 @@ function widget:DrawWorld()
 		end)
 		glFunc.Texture(false)
 		glFunc.Color(1, 1, 1, 1)
-
+		
 		-- Show tooltip when hovered for at least 1 second (max 5 times per game, 20 times total ever)
 		local currentTime = os.clock()
-		if interactionState.worldMaximizeIconHovered and WG['tooltip'] and
+		if interactionState.worldMaximizeIconHovered and WG['tooltip'] and 
 		   miscState.worldIconTooltipShownThisGame < 5 and miscState.worldIconTooltipShownTotal < 20 then
 			-- Only show tooltip after hovering for 1 second
 			if currentTime - interactionState.worldIconHoverStartTime >= 1.0 then
@@ -7974,7 +12118,7 @@ function widget:DrawWorld()
 					interactionState.worldIconTooltipDisplayStartTime = currentTime
 				end
 				-- Only count as shown after displaying for 1 second
-				if not interactionState.worldIconTooltipShownThisHover and
+				if not interactionState.worldIconTooltipShownThisHover and 
 				   currentTime - interactionState.worldIconTooltipDisplayStartTime >= 1.0 then
 					interactionState.worldIconTooltipShownThisHover = true
 					miscState.worldIconTooltipShownThisGame = miscState.worldIconTooltipShownThisGame + 1
@@ -7984,9 +12128,12 @@ function widget:DrawWorld()
 		end
 		return
 	end
-
+	
 	-- During animation or when not minimized, draw the PIP boundary
 	if uiState.inMinMode and not uiState.isAnimating then return end  -- Skip if fully minimized (handled above), but continue during animation
+	
+	-- In minimap mode, don't draw pip view rectangle in world
+	if isMinimapMode then return end
 
 	-- Draw rectangle outline in world view marking PIP boundaries
 	-- Don't show if tracking player camera, or if spectator (unless showWorldIconForSpectators is enabled)
@@ -8014,16 +12161,16 @@ function widget:DrawWorld()
 		glFunc.BeginEnd(glConst.LINE_STRIP, DrawGroundBox, render.world.l, render.world.r, render.world.b, render.world.t, cornerSize)
 		glFunc.Color(r, g, b, 0.045)
 		glFunc.BeginEnd(glConst.LINE_STRIP, DrawGroundBox, render.world.l+innerLineDist, render.world.r-innerLineDist, render.world.b-innerLineDist, render.world.t+innerLineDist, cornerSize*0.65)
-
-		-- Draw minimize icon at center of PIP boundary (if enabled and not tracking player)
-		if config.showWorldIcon and not interactionState.trackingPlayerID then
+		
+		-- Draw minimize icon at center of PIP boundary (if enabled and not tracking player, and game has started)
+		if config.showWorldIcon and not interactionState.trackingPlayerID and gameHasStarted then
 			local alt = Spring.GetModKeyState()
 			local iconSize = 16  -- World units
 			-- Use locked position if hovering, otherwise current camera center
 			local iconX = miscState.worldIconLockedX or cameraState.wcx
 			local iconZ = miscState.worldIconLockedZ or cameraState.wcz
 			local iconY = math.max(spFunc.GetGroundHeight(iconX, iconZ), 0) + 2  -- Above water level
-
+			
 			-- Calculate distance-based opacity (fade in when cursor approaches)
 			-- Use 18% of vertical screen height as the fade distance
 			local fadeDistance = render.vsy * 0.22
@@ -8038,7 +12185,7 @@ function widget:DrawWorld()
 					distanceOpacityMult = 1 - (screenDist / fadeDistance)
 				end
 			end
-
+			
 			-- Only draw if close enough
 			if distanceOpacityMult > 0 then
 				local iconOpacity = 0.1
@@ -8046,7 +12193,7 @@ function widget:DrawWorld()
 					iconOpacity = alt and 0.95 or 0.25
 				end
 				iconOpacity = iconOpacity * distanceOpacityMult
-
+				
 				glFunc.Color(1, 1, 1, iconOpacity)
 				glFunc.Texture('LuaUI/Images/pip/PipMinimize.png')
 				glFunc.BeginEnd(GL.QUADS, function()
@@ -8060,10 +12207,10 @@ function widget:DrawWorld()
 					glFunc.Vertex(iconX - iconSize, iconY, iconZ - iconSize)
 				end)
 				glFunc.Texture(false)
-
+				
 				-- Show tooltip when hovered for at least 1 second (max 5 times per game, 20 times total ever)
 				local currentTime = os.clock()
-				if interactionState.worldMinimizeIconHovered and WG['tooltip'] and
+				if interactionState.worldMinimizeIconHovered and WG['tooltip'] and 
 				   miscState.worldIconTooltipShownThisGame < 5 and miscState.worldIconTooltipShownTotal < 20 then
 					-- Only show tooltip after hovering for 1 second
 					if currentTime - interactionState.worldIconHoverStartTime >= 1.0 then
@@ -8073,7 +12220,7 @@ function widget:DrawWorld()
 							interactionState.worldIconTooltipDisplayStartTime = currentTime
 						end
 						-- Only count as shown after displaying for 1 second
-						if not interactionState.worldIconTooltipShownThisHover and
+						if not interactionState.worldIconTooltipShownThisHover and 
 						   currentTime - interactionState.worldIconTooltipDisplayStartTime >= 1.0 then
 							interactionState.worldIconTooltipShownThisHover = true
 							miscState.worldIconTooltipShownThisGame = miscState.worldIconTooltipShownThisGame + 1
@@ -8138,7 +12285,10 @@ function widget:DrawWorld()
 end
 
 function widget:DrawInMiniMap(minimapWidth, minimapHeight)
+	-- In minimap mode, don't draw PIP viewport rectangle on the minimap (we ARE the minimap)
+	if isMinimapMode then return end
 	if uiState.inMinMode then return end
+	if not config.showViewRectangleOnMinimap then return end
 
 	-- Calculate the viewport in world space
 	local wcx, wcz = cameraState.wcx, cameraState.wcz
@@ -8146,7 +12296,7 @@ function widget:DrawInMiniMap(minimapWidth, minimapHeight)
 	local pipHeight = render.dim.t - render.dim.b
 	local hw = 0.5 * pipWidth / cameraState.zoom
 	local hh = 0.5 * pipHeight / cameraState.zoom
-
+	
 	-- At 90/270 degrees, the world dimensions are swapped relative to screen
 	-- We need to swap the rectangle dimensions to match what's actually visible
 	local rotDeg = 0
@@ -8157,7 +12307,7 @@ function widget:DrawInMiniMap(minimapWidth, minimapHeight)
 	if isRotated90 then
 		hw, hh = hh, hw
 	end
-
+	
 	-- The minimap itself is rotated, so we need to transform the world position
 	-- to account for the minimap's rotation
 	local worldX, worldZ = wcx, wcz
@@ -8173,40 +12323,39 @@ function widget:DrawInMiniMap(minimapWidth, minimapHeight)
 		worldX = mapCenterX + (dx * cos_a - dz * sin_a)
 		worldZ = mapCenterZ + (dx * sin_a + dz * cos_a)
 	end
-
+	
 	-- Convert to minimap coordinates
 	local centerX = (worldX / mapInfo.mapSizeX) * minimapWidth
 	local centerY = (1 - (worldZ / mapInfo.mapSizeZ)) * minimapHeight
-
+	
 	-- Convert half-dimensions to minimap pixel size
 	local halfWidth = (hw / mapInfo.mapSizeX) * minimapWidth
 	local halfHeight = (hh / mapInfo.mapSizeZ) * minimapHeight
-
+	
 	-- Draw rectangle showing PIP view area (team-colored if tracking player)
-	local linewidth = math.ceil(render.vsy / 2000)
+	-- Use same resolution-scaled line widths as the PIP border shape
+	local linewidth = 1.5 * ((render.vsx + 1000) / 3000)
+	local outlinewidth = 3 * ((render.vsx + 1000) / 3000)
 	glFunc.Texture(false)
 	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
 	glFunc.PushMatrix()
-
+	
 	-- Translate to center and rotate
 	glFunc.Translate(centerX, centerY, 0)
 	if render.minimapRotation and render.minimapRotation ~= 0 then
 		glFunc.Rotate(render.minimapRotation * 180 / math.pi, 0, 0, 1)
 	end
-
+	
 	-- Draw dark background rectangle (centered at origin after transform)
-	-- Use octagon with corners cut off by 16 world units (converted to minimap units)
-	local cornerWorldSize = 64
-	local cornerX = (cornerWorldSize / mapInfo.mapSizeX) * minimapWidth
-	local cornerY = (cornerWorldSize / mapInfo.mapSizeZ) * minimapHeight
-	-- Clamp corner size if rectangle is too small
-	local maxCorner = math.min(halfWidth, halfHeight) / 2
-	local cx = math.min(cornerX, maxCorner)
-	local cy = math.min(cornerY, maxCorner)
+	-- Use same fixed screen-pixel chamfer as PIP border (2.5 pixels at 1080p)
+	-- Stays constant regardless of zoom level
+	local chamfer = 2.5 * (render.vsy / 1080)
+	local cx = chamfer
+	local cy = chamfer
 
 	-- draw dark outline
-	glFunc.Color(0, 0, 0, 0.6)
-	glFunc.LineWidth((linewidth*1.5)+1)
+	glFunc.Color(0, 0, 0, 0.4)
+	glFunc.LineWidth(outlinewidth)
 	glFunc.BeginEnd(GL.LINE_LOOP, function()
 		-- Bottom edge
 		glFunc.Vertex(-halfWidth + cx, -halfHeight)
@@ -8236,7 +12385,7 @@ function widget:DrawInMiniMap(minimapWidth, minimapHeight)
 	end
 
 	-- draw bright line
-	glFunc.Color(r, g, b, 1)
+	glFunc.Color(r, g, b, 0.8)
 	glFunc.LineWidth(linewidth)
 	glFunc.BeginEnd(GL.LINE_LOOP, function()
 		-- Bottom edge
@@ -8262,7 +12411,132 @@ function widget:DrawInMiniMap(minimapWidth, minimapHeight)
 	glFunc.PopMatrix()
 end
 
+-- Timer for periodic ghost building cleanup (checks ghosts outside PIP viewport)
+local ghostCleanupTimer = 0
+local ghostCleanupInterval = 1.0  -- Check every 1 second
+
 function widget:Update(dt)
+	-- Periodic ghost building cleanup: remove ghosts whose position is now in LOS
+	-- The draw-path check only catches ghosts within the PIP viewport; this catches all of them
+	if not cameraState.mySpecState then
+		ghostCleanupTimer = ghostCleanupTimer + dt
+		if ghostCleanupTimer >= ghostCleanupInterval then
+			ghostCleanupTimer = 0
+			local myAllyTeam = Spring.GetMyAllyTeamID()
+			for gID, ghost in pairs(ghostBuildings) do
+				local gy = spFunc.GetGroundHeight(ghost.x, ghost.z)
+				if spFunc.IsPosInLos(ghost.x, gy, ghost.z, myAllyTeam) then
+					-- Position is in LOS but unitID is not visible (not alive) — building was destroyed
+					if not spFunc.GetUnitDefID(gID) then
+						ghostBuildings[gID] = nil
+					end
+				end
+			end
+		end
+	end
+
+	-- In minimap mode, check if rotation changed and recalculate dimensions if needed
+	if isMinimapMode then
+		local currentRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+		
+		-- Only care about rotation category changes (0°/180° vs 90°/270°)
+		local function getRotationCategory(rot)
+			local rotDeg = math.abs(rot * 180 / math.pi) % 360
+			if (rotDeg > 80 and rotDeg < 100) or (rotDeg > 260 and rotDeg < 280) then
+				return 1  -- 90° or 270°
+			else
+				return 0  -- 0° or 180°
+			end
+		end
+		
+		local currentCategory = getRotationCategory(currentRotation)
+		local lastCategory = getRotationCategory(render.lastMinimapRotation or 0)
+		
+		if currentCategory ~= lastCategory then
+			-- Rotation category changed, recalculate dimensions preserving relative zoom
+			render.lastMinimapRotation = currentRotation
+			local oldMin = minimapModeMinZoom or cameraState.zoom
+			-- Calculate zoom ratio relative to old fitZoom (1.0 = fully zoomed out)
+			local zoomRatio = cameraState.zoom / oldMin
+			local targetZoomRatio = cameraState.targetZoom / oldMin
+			miscState.minimapCameraRestored = true
+			widget:ViewResize()  -- Recalculates dimensions and minimapModeMinZoom
+			-- Apply same ratio to new fitZoom so relative zoom is preserved
+			local newMin = minimapModeMinZoom or oldMin
+			cameraState.zoom = math.max(newMin * zoomRatio, newMin)
+			cameraState.targetZoom = math.max(newMin * targetZoomRatio, newMin)
+			cameraState.wcx = cameraState.targetWcx
+			cameraState.wcz = cameraState.targetWcz
+		else
+			-- Just update the stored rotation for rendering
+			render.minimapRotation = currentRotation
+		end
+	else
+		-- Non-minimap mode: detect rotation category changes and re-clamp camera
+		local currentRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+		local function getRotCat(rot)
+			local rotDeg = math.abs(rot * 180 / math.pi) % 180
+			return (rotDeg > 45 and rotDeg < 135) and 1 or 0
+		end
+		local curCat = getRotCat(currentRotation)
+		local lastCat = getRotCat(render.lastMinimapRotation or 0)
+		render.minimapRotation = currentRotation
+		if curCat ~= lastCat then
+			render.lastMinimapRotation = currentRotation
+			-- Recalculate dynamic min zoom (rotation-independent)
+			local pipWidth, pipHeight = GetEffectivePipDimensions()
+			local rawW = render.dim.r - render.dim.l
+			local rawH = render.dim.t - render.dim.b
+			local newMinZoom = math.min(rawW, rawH) / math.max(mapInfo.mapSizeX, mapInfo.mapSizeZ)
+			pipModeMinZoom = newMinZoom
+			-- Clamp zoom to new min if needed
+			if cameraState.zoom < pipModeMinZoom then
+				cameraState.zoom = pipModeMinZoom
+				cameraState.targetZoom = pipModeMinZoom
+			end
+			if cameraState.targetZoom < pipModeMinZoom then
+				cameraState.targetZoom = pipModeMinZoom
+			end
+			-- Re-clamp camera position with new effective dimensions
+			local visibleWorldWidth = pipWidth / cameraState.zoom
+			local visibleWorldHeight = pipHeight / cameraState.zoom
+			cameraState.wcx = ClampCameraAxis(cameraState.wcx, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+			cameraState.wcz = ClampCameraAxis(cameraState.wcz, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
+			cameraState.targetWcx = cameraState.wcx
+			cameraState.targetWcz = cameraState.wcz
+			RecalculateWorldCoordinates()
+			RecalculateGroundTextureCoordinates()
+		end
+	end
+	
+	-- Monitor dynamic water/lava level changes
+	if mapInfo.isLava or mapInfo.hasWater then
+		local lavaLevel = Spring.GetGameRulesParam("lavaLevel")
+		if lavaLevel and lavaLevel ~= -99999 then
+			-- Lava gadget is active and has set a real level
+			if mapInfo.dynamicWaterLevel ~= lavaLevel then
+				local oldLevel = mapInfo.dynamicWaterLevel
+				mapInfo.dynamicWaterLevel = lavaLevel
+				-- Check if the level actually changed enough to warrant a redraw
+				if not oldLevel or math.abs(lavaLevel - oldLevel) > 0.5 then
+					pipR2T.contentNeedsUpdate = true
+				end
+			end
+		end
+	end
+	
+	-- In minimap mode, ensure the old minimap widget stays disabled
+	-- (it may load after us due to widget layer ordering)
+	if isMinimapMode and not miscState.minimapWidgetDisabled then
+		local minimapWidget = widgetHandler:FindWidget("Minimap")
+		if minimapWidget then
+			widgetHandler:DisableWidget("Minimap")
+		end
+		-- Also ensure the engine minimap stays minimized
+		Spring.SendCommands("minimap minimize 1")
+		miscState.minimapWidgetDisabled = true
+	end
+	
 	-- Update spectating state and check if it changed
 	local oldSpecState = cameraState.mySpecState
 	cameraState.mySpecState = Spring.GetSpectatingState()
@@ -8275,7 +12549,12 @@ function widget:Update(dt)
 	-- Update mouse hover state
 	local mx, my = spFunc.GetMouseState()
 	local wasMouseOver = interactionState.isMouseOverPip
-	interactionState.isMouseOverPip = (mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t and not uiState.inMinMode)
+	-- Add nil safety for render.dim values
+	if render.dim.l and render.dim.r and render.dim.b and render.dim.t then
+		interactionState.isMouseOverPip = (mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t and not uiState.inMinMode)
+	else
+		interactionState.isMouseOverPip = false
+	end
 
 	-- Update hovered unit for icon highlighting (throttled for performance with many units)
 	-- Only check every 0.1 seconds or when mouse moves significantly
@@ -8340,7 +12619,7 @@ function widget:Update(dt)
 				-- But don't highlight neutral units
 				local allyTeam = Spring.GetUnitAllyTeam(unitID)
 				local isNeutral = (allyTeam == gaiaAllyTeamID)
-
+				
 				-- Check if unit is visible (LOS or radar)
 				local checkAllyTeamID = cameraState.myAllyTeamID
 				if interactionState.trackingPlayerID and cameraState.mySpecState then
@@ -8349,7 +12628,7 @@ function widget:Update(dt)
 				end
 				local losState = spFunc.GetUnitLosState(unitID, checkAllyTeamID)
 				local isVisibleOrRadar = losState and (losState.los or losState.radar)
-
+				
 				if not isNeutral and isVisibleOrRadar then
 					for i = 1, #selectedUnits do
 						local uDefID = spFunc.GetUnitDefID(selectedUnits[i])
@@ -8373,7 +12652,7 @@ function widget:Update(dt)
 		drawData.hoveredUnitID = nil
 	end
 	-- Otherwise keep the last cached hover value to prevent flickering
-
+	
 	-- If hover state changed, update frame buttons
 	if wasMouseOver ~= interactionState.isMouseOverPip and config.showButtonsOnHoverOnly then
 		pipR2T.frameNeedsUpdate = true
@@ -8414,6 +12693,9 @@ function widget:Update(dt)
 	if not leftButton and interactionState.leftMousePressed then
 		interactionState.leftMousePressed = false
 	end
+	if not leftButton and interactionState.pipMinimapDragging then
+		interactionState.pipMinimapDragging = false
+	end
 	if not rightButton and interactionState.rightMousePressed then
 		interactionState.rightMousePressed = false
 	end
@@ -8433,19 +12715,19 @@ function widget:Update(dt)
 	local wasMaximizeHovered = interactionState.worldMaximizeIconHovered
 	interactionState.worldMinimizeIconHovered = false
 	interactionState.worldMaximizeIconHovered = false
-
+	
 	local alt = Spring.GetModKeyState()
-	-- Also check for spectator (unless showWorldIconForSpectators is enabled)
-	local shouldCheckWorldIcon = config.showWorldIcon and not uiState.isAnimating and
+	-- Also check for spectator (unless showWorldIconForSpectators is enabled), and game must have started
+	local shouldCheckWorldIcon = config.showWorldIcon and not uiState.isAnimating and 
 		not interactionState.isMouseOverPip and not interactionState.trackingPlayerID and
-		(not cameraState.mySpecState or config.showWorldIconForSpectators)
+		(not cameraState.mySpecState or config.showWorldIconForSpectators) and gameHasStarted
 	if shouldCheckWorldIcon then
 		local _, pos = Spring.TraceScreenRay(mx, my, true)
 		if pos then
 			local worldX, worldZ = pos[1], pos[3]
 			local iconSize = 16  -- Must match DrawWorld icon size
 			local iconClickRadius = iconSize + 8  -- Slightly larger for easier clicking
-
+			
 			if uiState.inMinMode then
 				-- Check maximize icon - use locked position if already hovering
 				local iconX = miscState.worldIconLockedX or cameraState.wcx
@@ -8467,11 +12749,11 @@ function widget:Update(dt)
 			end
 		end
 	end
-
+	
 	-- Track hover start time for tooltip delay and lock icon position
 	local isNowHovered = interactionState.worldMinimizeIconHovered or interactionState.worldMaximizeIconHovered
 	local wasHovered = wasMinimizeHovered or wasMaximizeHovered
-
+	
 	-- Start tracking hover time when we start hovering, and lock icon position
 	if isNowHovered and not wasHovered then
 		interactionState.worldIconHoverStartTime = os.clock()
@@ -8479,7 +12761,7 @@ function widget:Update(dt)
 		miscState.worldIconLockedX = cameraState.wcx
 		miscState.worldIconLockedZ = cameraState.wcz
 	end
-
+	
 	-- Reset all tooltip state and unlock position when we stop hovering either icon
 	-- But don't clear if we're in the middle of a drag operation
 	local isWorldIconDragging = interactionState.worldIconClickStartX ~= 0 or interactionState.worldIconDragging
@@ -8494,6 +12776,9 @@ function widget:Update(dt)
 		miscState.worldIconLockedZ = nil
 	end
 
+	-- Update wall-clock time (always advances, even when paused — used for blink/pulse animations)
+	wallClockTime = wallClockTime + dt
+
 	-- Update game time (only when game is not paused)
 	local _, _, isPaused = Spring.GetGameSpeed()
 	if not isPaused then
@@ -8502,38 +12787,43 @@ function widget:Update(dt)
 
 	-- Handle minimize/maximize animation
 	if uiState.isAnimating then
-		uiState.animationProgress = uiState.animationProgress + (dt / uiState.animationDuration)
-		pipR2T.contentNeedsUpdate = true  -- Update during animation
-		pipR2T.frameNeedsUpdate = true  -- Frame also needs update during animation
-
-		if uiState.animationProgress >= 1 then
-			-- Animation complete
-			uiState.animationProgress = 1
-			uiState.isAnimating = false
-			render.dim.l = uiState.animEndDim.l
-			render.dim.r = uiState.animEndDim.r
-			render.dim.b = uiState.animEndDim.b
-			render.dim.t = uiState.animEndDim.t
-			-- Recalculate world coordinates for final dimensions
-			RecalculateWorldCoordinates()
-			RecalculateGroundTextureCoordinates()
-			pipR2T.frameNeedsUpdate = true  -- Final update after animation
-			-- Update guishader blur after animation completes
-			UpdateGuishaderBlur()
+		-- Guard: ensure animStartDim and animEndDim are properly initialized
+		if not AreDimensionsValid(uiState.animStartDim) or not AreDimensionsValid(uiState.animEndDim) then
+			RecoverInvalidAnimationState()
 		else
-			-- Interpolate dimensions with easing (ease-in-out)
-			local t = uiState.animationProgress
-			local ease = t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
+			uiState.animationProgress = uiState.animationProgress + (dt / uiState.animationDuration)
+			pipR2T.contentNeedsUpdate = true  -- Update during animation
+			pipR2T.frameNeedsUpdate = true  -- Frame also needs update during animation
 
-			render.dim.l = uiState.animStartDim.l + (uiState.animEndDim.l - uiState.animStartDim.l) * ease
-			render.dim.r = uiState.animStartDim.r + (uiState.animEndDim.r - uiState.animStartDim.r) * ease
-			render.dim.b = uiState.animStartDim.b + (uiState.animEndDim.b - uiState.animStartDim.b) * ease
-			render.dim.t = uiState.animStartDim.t + (uiState.animEndDim.t - uiState.animStartDim.t) * ease
+			if uiState.animationProgress >= 1 then
+				-- Animation complete
+				uiState.animationProgress = 1
+				uiState.isAnimating = false
+				render.dim.l = uiState.animEndDim.l
+				render.dim.r = uiState.animEndDim.r
+				render.dim.b = uiState.animEndDim.b
+				render.dim.t = uiState.animEndDim.t
+				-- Recalculate world coordinates for final dimensions
+				RecalculateWorldCoordinates()
+				RecalculateGroundTextureCoordinates()
+				pipR2T.frameNeedsUpdate = true  -- Final update after animation
+				-- Update guishader blur after animation completes
+				UpdateGuishaderBlur()
+			else
+				-- Interpolate dimensions with easing (ease-in-out)
+				local t = uiState.animationProgress
+				local ease = t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
 
-			RecalculateWorldCoordinates()
-			RecalculateGroundTextureCoordinates()
-			-- Update guishader blur continuously during animation
-			UpdateGuishaderBlur()
+				render.dim.l = uiState.animStartDim.l + (uiState.animEndDim.l - uiState.animStartDim.l) * ease
+				render.dim.r = uiState.animStartDim.r + (uiState.animEndDim.r - uiState.animStartDim.r) * ease
+				render.dim.b = uiState.animStartDim.b + (uiState.animEndDim.b - uiState.animStartDim.b) * ease
+				render.dim.t = uiState.animStartDim.t + (uiState.animEndDim.t - uiState.animStartDim.t) * ease
+
+				RecalculateWorldCoordinates()
+				RecalculateGroundTextureCoordinates()
+				-- Update guishader blur continuously during animation
+				UpdateGuishaderBlur()
+			end
 		end
 	end
 
@@ -8568,24 +12858,19 @@ function widget:Update(dt)
 		cameraState.targetWcz = cameraState.zoomToCursorWorldZ + screenOffsetY / cameraState.targetZoom
 
 		-- Apply same margin-based clamping as panning
-		local pipWidth = render.dim.r - render.dim.l
-		local pipHeight = render.dim.t - render.dim.b
+		local pipWidth, pipHeight = GetEffectivePipDimensions()
 		local visibleWorldWidth = pipWidth / cameraState.targetZoom
 		local visibleWorldHeight = pipHeight / cameraState.targetZoom
 
-		-- Use the smaller dimension for consistent visual margin
-		local smallerVisibleDimension = math.min(visibleWorldWidth, visibleWorldHeight)
-		local margin = smallerVisibleDimension * config.mapEdgeMargin
-
-		-- Calculate min/max camera positions to keep margin from map edges
-		local minWcx = visibleWorldWidth / 2 - margin
-		local maxWcx = mapInfo.mapSizeX - (visibleWorldWidth / 2 - margin)
-		local minWcz = visibleWorldHeight / 2 - margin
-		local maxWcz = mapInfo.mapSizeZ - (visibleWorldHeight / 2 - margin)
-
-		-- Clamp with margin-based boundaries
-		cameraState.targetWcx = math.min(math.max(cameraState.targetWcx, minWcx), maxWcx)
-		cameraState.targetWcz = math.min(math.max(cameraState.targetWcz, minWcz), maxWcz)
+		-- Clamp with per-axis margins (centers on axis when view exceeds map)
+		-- In minimap mode at minimum zoom, force center on map
+		if IsAtMinimumZoom(cameraState.targetZoom) then
+			cameraState.targetWcx = mapInfo.mapSizeX / 2
+			cameraState.targetWcz = mapInfo.mapSizeZ / 2
+		else
+			cameraState.targetWcx = ClampCameraAxis(cameraState.targetWcx, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+			cameraState.targetWcz = ClampCameraAxis(cameraState.targetWcz, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
+		end
 
 		centerNeedsUpdate = true  -- Force center update
 	end
@@ -8593,38 +12878,77 @@ function widget:Update(dt)
 	if zoomNeedsUpdate or centerNeedsUpdate then
 		if zoomNeedsUpdate then
 			cameraState.zoom = cameraState.zoom + (cameraState.targetZoom - cameraState.zoom) * math.min(dt * config.zoomSmoothness, 1)
+			-- Snap to target when close enough to avoid the asymptotic interpolation
+			-- never reaching exact fitZoom (which would leave a sliver of void)
+			if math.abs(cameraState.zoom - cameraState.targetZoom) < 0.002 then
+				cameraState.zoom = cameraState.targetZoom
+			end
 		end
 
 		-- Calculate bounds for CURRENT zoom level
+		-- When rotated 90°/270°, swap pip dimensions for world coordinate calculations
 		local pipWidth = render.dim.r - render.dim.l
 		local pipHeight = render.dim.t - render.dim.b
+		
+		-- Check if we're rotated 90° or 270°
+		local isRotated90 = false
+		if render.minimapRotation then
+			local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+			if rotDeg > 45 and rotDeg < 135 then
+				isRotated90 = true
+				-- Swap dimensions for world calculations when rotated
+				pipWidth, pipHeight = pipHeight, pipWidth
+			end
+		end
+		
 		local currentVisibleWorldWidth = pipWidth / cameraState.zoom
 		local currentVisibleWorldHeight = pipHeight / cameraState.zoom
-		local currentSmallerDimension = math.min(currentVisibleWorldWidth, currentVisibleWorldHeight)
-		local currentMargin = currentSmallerDimension * config.mapEdgeMargin
+		local currentMarginX = currentVisibleWorldWidth * config.mapEdgeMargin
+		local currentMarginZ = currentVisibleWorldHeight * config.mapEdgeMargin
 
-		local currentMinWcx = currentVisibleWorldWidth / 2 - currentMargin
-		local currentMaxWcx = mapInfo.mapSizeX - (currentVisibleWorldWidth / 2 - currentMargin)
-		local currentMinWcz = currentVisibleWorldHeight / 2 - currentMargin
-		local currentMaxWcz = mapInfo.mapSizeZ - (currentVisibleWorldHeight / 2 - currentMargin)
+		local currentMinWcx = currentVisibleWorldWidth / 2 - currentMarginX
+		local currentMaxWcx = mapInfo.mapSizeX - (currentVisibleWorldWidth / 2 - currentMarginX)
+		local currentMinWcz = currentVisibleWorldHeight / 2 - currentMarginZ
+		local currentMaxWcz = mapInfo.mapSizeZ - (currentVisibleWorldHeight / 2 - currentMarginZ)
+
+		-- When view exceeds map in an axis, force center (min >= max means view > map + 2*margin)
+		local currentForceCenterX = currentMinWcx >= currentMaxWcx
+		local currentForceCenterZ = currentMinWcz >= currentMaxWcz
+		if currentForceCenterX then
+			currentMinWcx = mapInfo.mapSizeX / 2
+			currentMaxWcx = mapInfo.mapSizeX / 2
+		end
+		if currentForceCenterZ then
+			currentMinWcz = mapInfo.mapSizeZ / 2
+			currentMaxWcz = mapInfo.mapSizeZ / 2
+		end
 
 		-- Also calculate bounds for TARGET zoom level to detect if we WILL hit an edge
 		local targetVisibleWorldWidth = pipWidth / cameraState.targetZoom
 		local targetVisibleWorldHeight = pipHeight / cameraState.targetZoom
-		local targetSmallerDimension = math.min(targetVisibleWorldWidth, targetVisibleWorldHeight)
-		local targetMargin = targetSmallerDimension * config.mapEdgeMargin
+		local targetMarginX = targetVisibleWorldWidth * config.mapEdgeMargin
+		local targetMarginZ = targetVisibleWorldHeight * config.mapEdgeMargin
 
-		local targetMinWcx = targetVisibleWorldWidth / 2 - targetMargin
-		local targetMaxWcx = mapInfo.mapSizeX - (targetVisibleWorldWidth / 2 - targetMargin)
-		local targetMinWcz = targetVisibleWorldHeight / 2 - targetMargin
-		local targetMaxWcz = mapInfo.mapSizeZ - (targetVisibleWorldHeight / 2 - targetMargin)
+		local targetMinWcx = targetVisibleWorldWidth / 2 - targetMarginX
+		local targetMaxWcx = mapInfo.mapSizeX - (targetVisibleWorldWidth / 2 - targetMarginX)
+		local targetMinWcz = targetVisibleWorldHeight / 2 - targetMarginZ
+		local targetMaxWcz = mapInfo.mapSizeZ - (targetVisibleWorldHeight / 2 - targetMarginZ)
+
+		if targetMinWcx >= targetMaxWcx then
+			targetMinWcx = mapInfo.mapSizeX / 2
+			targetMaxWcx = mapInfo.mapSizeX / 2
+		end
+		if targetMinWcz >= targetMaxWcz then
+			targetMinWcz = mapInfo.mapSizeZ / 2
+			targetMaxWcz = mapInfo.mapSizeZ / 2
+		end
 
 		-- Detect if at edge: either currently at edge, OR would be pushed by target zoom bounds
 		-- This handles both zooming from outside map AND zooming near edges inside map
-		local atLeftEdge = cameraState.wcx <= currentMinWcx + 1 or cameraState.wcx <= targetMinWcx + 1
-		local atRightEdge = cameraState.wcx >= currentMaxWcx - 1 or cameraState.wcx >= targetMaxWcx - 1
-		local atTopEdge = cameraState.wcz <= currentMinWcz + 1 or cameraState.wcz <= targetMinWcz + 1
-		local atBottomEdge = cameraState.wcz >= currentMaxWcz - 1 or cameraState.wcz >= targetMaxWcz - 1
+		local atLeftEdge = currentForceCenterX or cameraState.wcx <= currentMinWcx + 1 or cameraState.wcx <= targetMinWcx + 1
+		local atRightEdge = currentForceCenterX or cameraState.wcx >= currentMaxWcx - 1 or cameraState.wcx >= targetMaxWcx - 1
+		local atTopEdge = currentForceCenterZ or cameraState.wcz <= currentMinWcz + 1 or cameraState.wcz <= targetMinWcz + 1
+		local atBottomEdge = currentForceCenterZ or cameraState.wcz >= currentMaxWcz - 1 or cameraState.wcz >= targetMaxWcz - 1
 
 		if centerNeedsUpdate then
 			-- Use different smoothness values depending on context
@@ -8644,7 +12968,7 @@ function widget:Update(dt)
 			end
 
 			local centerFactor = math.min(dt * smoothnessToUse, 1)
-
+			
 			-- When zooming near edges, we need to handle two cases:
 			-- 1. Already AT the edge (position at current boundary) -> directly track the edge (snap)
 			-- 2. Approaching the edge (detected via target bounds) -> smoothly transition toward edge
@@ -8655,7 +12979,7 @@ function widget:Update(dt)
 				local atCurrentRightEdge = cameraState.wcx >= currentMaxWcx - 2
 				local atCurrentTopEdge = cameraState.wcz <= currentMinWcz + 2
 				local atCurrentBottomEdge = cameraState.wcz >= currentMaxWcz - 2
-
+				
 				if atLeftEdge then
 					if atCurrentLeftEdge then
 						-- Already at edge - directly track it (edge position changes with zoom)
@@ -8677,7 +13001,7 @@ function widget:Update(dt)
 				else
 					cameraState.wcx = cameraState.wcx + (cameraState.targetWcx - cameraState.wcx) * centerFactor
 				end
-
+				
 				if atTopEdge then
 					if atCurrentTopEdge then
 						cameraState.wcz = currentMinWcz
@@ -8707,6 +13031,14 @@ function widget:Update(dt)
 		-- Final clamp based on current zoom
 		cameraState.wcx = math.min(math.max(cameraState.wcx, currentMinWcx), currentMaxWcx)
 		cameraState.wcz = math.min(math.max(cameraState.wcz, currentMinWcz), currentMaxWcz)
+		
+		-- In minimap mode at minimum zoom, force exact center to prevent any drift
+		if IsAtMinimumZoom(cameraState.zoom) then
+			cameraState.wcx = mapInfo.mapSizeX / 2
+			cameraState.wcz = mapInfo.mapSizeZ / 2
+			cameraState.targetWcx = cameraState.wcx
+			cameraState.targetWcz = cameraState.wcz
+		end
 
 		RecalculateWorldCoordinates()
 		RecalculateGroundTextureCoordinates()
@@ -8717,82 +13049,83 @@ function widget:Update(dt)
 	end
 
 	if interactionState.areIncreasingZoom then
-		cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomRate ^ dt, config.zoomMax)
+		cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomRate ^ dt, GetEffectiveZoomMax())
 
 		-- Clamp BOTH current and target camera positions to respect margin
 		-- Use current zoom for current position, target zoom for target position
 		local pipWidth = render.dim.r - render.dim.l
 		local pipHeight = render.dim.t - render.dim.b
+		
+		-- Swap dimensions when rotated 90°/270°
+		if render.minimapRotation then
+			local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+			if rotDeg > 45 and rotDeg < 135 then
+				pipWidth, pipHeight = pipHeight, pipWidth
+			end
+		end
 
 		-- Clamp current animated position
 		local currentVisibleWorldWidth = pipWidth / cameraState.zoom
 		local currentVisibleWorldHeight = pipHeight / cameraState.zoom
-		local currentSmallerDimension = math.min(currentVisibleWorldWidth, currentVisibleWorldHeight)
-		local currentMargin = currentSmallerDimension * config.mapEdgeMargin
 
-		local currentMinWcx = currentVisibleWorldWidth / 2 - currentMargin
-		local currentMaxWcx = mapInfo.mapSizeX - (currentVisibleWorldWidth / 2 - currentMargin)
-		local currentMinWcz = currentVisibleWorldHeight / 2 - currentMargin
-		local currentMaxWcz = mapInfo.mapSizeZ - (currentVisibleWorldHeight / 2 - currentMargin)
-
-		cameraState.wcx = math.min(math.max(cameraState.wcx, currentMinWcx), currentMaxWcx)
-		cameraState.wcz = math.min(math.max(cameraState.wcz, currentMinWcz), currentMaxWcz)
+		cameraState.wcx = ClampCameraAxis(cameraState.wcx, currentVisibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.wcz = ClampCameraAxis(cameraState.wcz, currentVisibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 		-- Clamp target position
 		local targetVisibleWorldWidth = pipWidth / cameraState.targetZoom
 		local targetVisibleWorldHeight = pipHeight / cameraState.targetZoom
-		local targetSmallerDimension = math.min(targetVisibleWorldWidth, targetVisibleWorldHeight)
-		local targetMargin = targetSmallerDimension * config.mapEdgeMargin
 
-		local targetMinWcx = targetVisibleWorldWidth / 2 - targetMargin
-		local targetMaxWcx = mapInfo.mapSizeX - (targetVisibleWorldWidth / 2 - targetMargin)
-		local targetMinWcz = targetVisibleWorldHeight / 2 - targetMargin
-		local targetMaxWcz = mapInfo.mapSizeZ - (targetVisibleWorldHeight / 2 - targetMargin)
-
-		cameraState.targetWcx = math.min(math.max(cameraState.targetWcx, targetMinWcx), targetMaxWcx)
-		cameraState.targetWcz = math.min(math.max(cameraState.targetWcz, targetMinWcz), targetMaxWcz)
+		cameraState.targetWcx = ClampCameraAxis(cameraState.targetWcx, targetVisibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.targetWcz = ClampCameraAxis(cameraState.targetWcz, targetVisibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 		-- Don't recalculate here - will be done below in the main zoom/center update block
 	elseif interactionState.areDecreasingZoom then
-		cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomRate ^ dt, config.zoomMin)
+		cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomRate ^ dt, GetEffectiveZoomMin())
 
 		-- Clamp BOTH current and target camera positions to respect margin
 		-- Use current zoom for current position, target zoom for target position
 		local pipWidth = render.dim.r - render.dim.l
 		local pipHeight = render.dim.t - render.dim.b
+		
+		-- Swap dimensions when rotated 90°/270°
+		if render.minimapRotation then
+			local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+			if rotDeg > 45 and rotDeg < 135 then
+				pipWidth, pipHeight = pipHeight, pipWidth
+			end
+		end
 
 		-- Clamp current animated position
 		local currentVisibleWorldWidth = pipWidth / cameraState.zoom
 		local currentVisibleWorldHeight = pipHeight / cameraState.zoom
-		local currentSmallerDimension = math.min(currentVisibleWorldWidth, currentVisibleWorldHeight)
-		local currentMargin = currentSmallerDimension * config.mapEdgeMargin
 
-		local currentMinWcx = currentVisibleWorldWidth / 2 - currentMargin
-		local currentMaxWcx = mapInfo.mapSizeX - (currentVisibleWorldWidth / 2 - currentMargin)
-		local currentMinWcz = currentVisibleWorldHeight / 2 - currentMargin
-		local currentMaxWcz = mapInfo.mapSizeZ - (currentVisibleWorldHeight / 2 - currentMargin)
-
-		cameraState.wcx = math.min(math.max(cameraState.wcx, currentMinWcx), currentMaxWcx)
-		cameraState.wcz = math.min(math.max(cameraState.wcz, currentMinWcz), currentMaxWcz)
+		cameraState.wcx = ClampCameraAxis(cameraState.wcx, currentVisibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.wcz = ClampCameraAxis(cameraState.wcz, currentVisibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 		-- Clamp target position
 		local targetVisibleWorldWidth = pipWidth / cameraState.targetZoom
 		local targetVisibleWorldHeight = pipHeight / cameraState.targetZoom
-		local targetSmallerDimension = math.min(targetVisibleWorldWidth, targetVisibleWorldHeight)
-	local targetMargin = targetSmallerDimension * config.mapEdgeMargin
-		cameraState.targetWcz = math.min(math.max(cameraState.targetWcz, targetMinWcz), targetMaxWcz)
+
+		cameraState.targetWcx = ClampCameraAxis(cameraState.targetWcx, targetVisibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.targetWcz = ClampCameraAxis(cameraState.targetWcz, targetVisibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 		-- Don't recalculate here - will be done below in the main zoom/center update block
 	end
 
-	if not gameHasStarted then
+	if not gameHasStarted and not isMinimapMode then
 		-- Only auto-focus on start position if not spectating or not tracking another player
+		-- Don't do this in minimap mode - the minimap should show the full map
 		local isSpec = Spring.GetSpectatingState()
 		if not isSpec and not interactionState.trackingPlayerID then
 			local newX, _, newZ = Spring.GetTeamStartPosition(Spring.GetMyTeamID())
 			if newX ~= miscState.startX then
 				miscState.startX, miscState.startZ = newX, newZ
-				cameraState.wcx, cameraState.wcz = miscState.startX, miscState.startZ
+				-- Apply map margin limits to start position
+				local pipWidth, pipHeight = GetEffectivePipDimensions()
+				local visibleWorldWidth = pipWidth / cameraState.zoom
+				local visibleWorldHeight = pipHeight / cameraState.zoom
+				cameraState.wcx = ClampCameraAxis(newX, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+				cameraState.wcz = ClampCameraAxis(newZ, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 				cameraState.targetWcx, cameraState.targetWcz = cameraState.wcx, cameraState.wcz  -- Set targets instantly for start position
 				RecalculateWorldCoordinates()
 				RecalculateGroundTextureCoordinates()
@@ -8842,38 +13175,12 @@ function widget:GameStart()
 
 	-- Automatically maximize for players (only for the first PIP instance)
 	if pipNumber == 1 and not cameraState.mySpecState and uiState.inMinMode then
-		-- Trigger maximize animation
-		render.usedButtonSize = math.floor(config.buttonSize * render.widgetScale * render.uiScale)
-		local buttonSizeWithScale = math.floor(render.usedButtonSize * config.maximizeSizemult)
-
-		-- Update camera to tracked units immediately before maximizing
-		if interactionState.areTracking then
-			UpdateTracking()
-		end
-		RecalculateWorldCoordinates()
-		RecalculateGroundTextureCoordinates()
-
-		uiState.animStartDim = {
-			l = uiState.minModeL,
-			r = uiState.minModeL + buttonSizeWithScale,
-			b = uiState.minModeB,
-			t = uiState.minModeB + buttonSizeWithScale
-		}
-		uiState.animEndDim = {
-			l = uiState.savedDimensions.l,
-			r = uiState.savedDimensions.r,
-			b = uiState.savedDimensions.b,
-			t = uiState.savedDimensions.t
-		}
-		uiState.animationProgress = 0
-		uiState.isAnimating = true
-		uiState.inMinMode = false
-		miscState.hasOpenedPIPThisGame = true
+		StartMaximizeAnimation()
 	end
 
-	-- Automatically track the commander at game start (not for spectators)
+	-- Automatically track the commander at game start (not for spectators or minimap mode)
 	local spec = Spring.GetSpectatingState()
-	if not spec then
+	if not spec and not isMinimapMode then
 		local commanderID = FindMyCommander()
 		if commanderID then
 			interactionState.areTracking = {commanderID}  -- Store as table/array
@@ -8881,14 +13188,14 @@ function widget:GameStart()
 	end
 end
 
-function widget:UnitSeismicPing(x, y, z, strength, allyTeam)
+function widget:UnitSeismicPing(x, y, z, strength, allyTeam, unitID, unitDefID)
 	if uiState.inMinMode then return end
 
-
 	local myAllyTeam = Spring.GetMyAllyTeamID()
-	--local unitAllyTeam = Spring.GetUnitAllyTeam(unitID)
+	local spec, fullview = Spring.GetSpectatingState()
+	local unitAllyTeam = unitID and Spring.GetUnitAllyTeam(unitID) or allyTeam
 
-	if (spec or allyTeam == myAllyTeam) then
+	if (spec or allyTeam == myAllyTeam) and unitAllyTeam ~= allyTeam then
 		-- Calculate ping radius based on strength (strength is typically 1-10)
 		-- Use larger base radius for visibility
 		local maxRadius = 100 + math.min(strength, 20) * 15
@@ -8910,7 +13217,9 @@ function widget:UnitSeismicPing(x, y, z, strength, allyTeam)
 	end
 end
 
-function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
+-- Helper function to create icon shatter effect for a unit
+-- unitVelX, unitVelZ are optional velocity components to add to fragments
+local function CreateIconShatter(unitID, unitDefID, unitTeam, unitVelX, unitVelZ)
 	if uiState.inMinMode then return end
 	-- Performance: limit max simultaneous shatters
 	if #cache.iconShatters >= cache.maxIconShatters then return end
@@ -8929,10 +13238,10 @@ function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
 	-- Get icon data
 	local iconData = cache.unitIcon[unitDefID]
 	if not iconData or not iconData.size then return end -- Ensure icon has size data
-	-- Calculate distMult the same way as icon rendering to match size at all zoom levels
-	local distMult = math.min(math.max(1, 2.2-(cameraState.zoom*3.3)), 3)
-	-- Use exact same formula as icon rendering: iconRadius * cameraState.zoom * iconData.size * distMult
-	local iconSize = config.iconRadius * cameraState.zoom * iconData.size * distMult
+	-- Engine-matching icon size (same as GL4DrawIcons/DrawIcons)
+	local resScale = render.contentScale or 1
+	local unitBaseSize = Spring.GetConfigFloat("MinimapIconScale", 3.5)
+	local iconSize = unitBaseSize * (mapInfo.mapSizeX * mapInfo.mapSizeZ / 40000) ^ 0.25 * math.sqrt(cameraState.zoom) * resScale * iconData.size
 
 	-- Use fixed 2x2 or 3x3 grid for fewer, bigger fragments
 	-- Adjust threshold based on actual rendered size
@@ -8944,6 +13253,18 @@ function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
 	local teamColor = teamColors[unitTeam]
 	if not teamColor then return end
 	local teamR, teamG, teamB = teamColor[1], teamColor[2], teamColor[3]
+
+	-- Convert unit velocity from world units to screen units (if provided)
+	-- Scale by zoom to match fragment velocity scale
+	local velModX = 0
+	local velModZ = 0
+	if unitVelX and unitVelZ then
+		-- Convert world velocity to screen velocity (scale by zoom factor)
+		-- Multiply by a factor to make the effect clearly visible
+		local velScale = 10.0 / cameraState.zoom
+		velModX = unitVelX * velScale
+		velModZ = unitVelZ * velScale
+	end
 
 	-- Create fragments in a grid pattern - each fragment represents a unique piece of the texture
 	local fragments = {}
@@ -8967,8 +13288,9 @@ function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
 				-- Store world coordinates (not PiP-local)
 				wx = ux,
 				wz = uz,
-				vx = math.cos(angle) * speed,
-				vz = math.sin(angle) * speed,
+				-- Add unit velocity to fragment velocity
+				vx = math.cos(angle) * speed + velModX,
+				vz = math.sin(angle) * speed + velModZ,
 				-- UV coordinates map each fragment to its portion of the texture
 				-- Flip Y to match OpenGL texture coordinates (Y=0 at bottom)
 				uvx1 = gx / grid,
@@ -9001,105 +13323,201 @@ function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
 	})
 end
 
+-- Called by unit_crashing_aircraft gadget when an aircraft starts crashing
+function widget:CrashingAircraft(unitID, unitDefID, teamID)
+	miscState.crashingUnits[unitID] = true
+	
+	-- Create shatter effect with unit's current velocity
+	local vx, vy, vz = Spring.GetUnitVelocity(unitID)
+	CreateIconShatter(unitID, unitDefID, teamID, vx, vz)
+end
+
+function widget:UnitDestroyed(unitID, unitDefID, unitTeam)
+	-- Note: We intentionally do NOT clear crashingUnits here because DrawScreen may run
+	-- after this callback in the same frame, and we need the entry to still exist so
+	-- the crashing unit icon doesn't flash for one frame when it dies.
+	-- The entry will remain in crashingUnits but this is harmless - it's just a boolean.
+	
+	-- Create shatter effect for non-crashing units (crashing units already shattered in CrashingAircraft)
+	if not miscState.crashingUnits[unitID] then
+		-- Get unit velocity so shatter fragments carry the unit's momentum
+		local vx, vy, vz = Spring.GetUnitVelocity(unitID)
+		CreateIconShatter(unitID, unitDefID, unitTeam, vx, vz)
+	end
+	-- Don't clear crashingUnits[unitID] here - let it persist to prevent icon flash
+
+	-- Clear GL4 caches for this unit
+	gl4Icons.unitDefCache[unitID] = nil
+	gl4Icons.unitTeamCache[unitID] = nil
+
+	-- Clear ghost building and position caches
+	ghostBuildings[unitID] = nil
+	ownBuildingPosX[unitID] = nil
+	ownBuildingPosZ[unitID] = nil
+end
+
+-- Handle unit team changes (give/take)
+function widget:UnitGiven(unitID, unitDefID, newTeamID, oldTeamID)
+	-- Clear GL4 cache so it picks up the new team color
+	gl4Icons.unitTeamCache[unitID] = nil
+end
+
+-- Handle buildings being picked up by transports — invalidate cached position
+function widget:UnitLoaded(unitID, unitDefID, unitTeam, transportID, transportTeam)
+	ownBuildingPosX[unitID] = nil
+	ownBuildingPosZ[unitID] = nil
+end
+
+-- Handle buildings being dropped by transports — update cached position and ghost
+function widget:UnitUnloaded(unitID, unitDefID, unitTeam, transportID, transportTeam)
+	local x, _, z = spFunc.GetUnitBasePosition(unitID)
+	if x and cache.isBuilding[unitDefID] then
+		if cache.cantBeTransported[unitDefID] then
+			ownBuildingPosX[unitID] = x
+			ownBuildingPosZ[unitID] = z
+		end
+		-- Update ghost position if this was a tracked enemy building
+		if ghostBuildings[unitID] then
+			ghostBuildings[unitID].x = x
+			ghostBuildings[unitID].z = z
+		end
+	end
+end
+
+-- Track enemy building positions for ghost rendering on PIP
+-- UnitEnteredLos is only called for non-allied units entering the local player's LOS
+-- We record the building's position so we can draw its icon when it leaves LOS
+function widget:UnitEnteredLos(unitID, unitTeam)
+	if cameraState.mySpecState then return end
+	local unitDefID = spFunc.GetUnitDefID(unitID)
+	if not unitDefID then return end
+	if not cache.isBuilding[unitDefID] then return end
+	local x, _, z = spFunc.GetUnitBasePosition(unitID)
+	if not x then return end
+	ghostBuildings[unitID] = { defID = unitDefID, x = x, z = z, teamID = unitTeam }
+end
+
+-- Handle explosions from weapons (called when a visible explosion occurs)
 function widget:VisibleExplosion(px, py, pz, weaponID, ownerID)
 	if uiState.inMinMode then return end
-	-- Skip processing explosions when we're not rendering them due to zoom level
-	if cameraState.zoom < config.zoomExplosionDetail then return end
-	if config.drawProjectiles then
-		-- Skip specific weapons using cached data (e.g., footstep effects)
-		if weaponID and cache.weaponSkipExplosion[weaponID] then
-			return
+	if not config.drawExplosions then return end
+	
+	-- Skip specific weapons using cached data (e.g., footstep effects)
+	if weaponID and cache.weaponSkipExplosion[weaponID] then
+		return
+	end
+	
+	-- Get explosion radius for visibility check
+	local radius = 10
+	if weaponID and cache.weaponExplosionRadius[weaponID] then
+		radius = cache.weaponExplosionRadius[weaponID]
+	end
+	
+	-- Graduated visibility: larger explosions visible at lower zoom levels
+	-- radius 100+: always visible
+	-- radius 60-100: visible at zoom >= 0.04
+	-- radius 40-60: visible at zoom >= 0.06
+	-- radius 20-40: visible at zoom >= 0.09
+	-- radius < 20: visible at zoom >= 0.12
+	local minZoom = 0
+	if radius < 100 then
+		minZoom = math.max(0, 0.14 - radius * 0.0014)
+	end
+	if cameraState.zoom < minZoom then return end
+
+	-- Check if this is a lightning weapon
+	local isLightning = weaponID and cache.weaponIsLightning[weaponID]
+	
+	-- Check if this is a paralyze weapon
+	local isParalyze = weaponID and cache.weaponIsParalyze[weaponID]
+	
+	-- Check if this is an anti-air weapon (skip AA explosions for now)
+	local isAA = weaponID and cache.weaponIsAA[weaponID]
+	if isAA then return end
+
+	-- Add explosion to list with radius from cached weapon data
+	local radius = 10 -- Default radius
+	if weaponID and cache.weaponExplosionRadius[weaponID] then
+		radius = cache.weaponExplosionRadius[weaponID]
+	end
+
+	-- Skip very small explosions (below threshold), except for lightning
+	if radius < 8 and not isLightning then
+		return
+	end
+
+	-- Create explosion entry
+	local explosion = {
+		x = px,
+		y = py,
+		z = pz,
+		radius = radius,
+		startTime = gameTime,
+		randomSeed = math.random() * 1000,  -- For consistent per-explosion randomness
+		rotationSpeed = (math.random() - 0.5) * 4,  -- Random rotation speed
+		particles = {},  -- Will store particle debris
+		isLightning = isLightning,
+		isParalyze = isParalyze,
+		isAA = isAA
+	}
+
+	-- Add lightning sparks
+	if isLightning then
+		local sparkCount = 6 + math.floor(math.random() * 4) -- 6-9 sparks
+		for i = 1, sparkCount do
+			local angle = (i / sparkCount) * 2 * math.pi + (math.random() - 0.5) * 0.8
+			local speed = 15 + math.random() * 20
+			local vx = math.cos(angle) * speed
+			local vz = math.sin(angle) * speed
+
+			table.insert(explosion.particles, {
+				x = 0,
+				z = 0,
+				vx = vx,
+				vz = vz,
+				life = 0.3 + math.random() * 0.2, -- 0.3-0.5 seconds
+				size = 2 + math.random() * 2
+			})
+		end
+	end
+
+	table.insert(cache.explosions, explosion)
+
+	-- Add particle debris for larger explosions
+	if radius > 30 then
+		local explosion = cache.explosions[#cache.explosions]
+		local particleCount = math.min(12, math.floor(radius / 10))
+
+		-- Massive explosions get way more particles and additional effects
+		if radius > 150 then
+			particleCount = math.min(24, math.floor(radius / 8))  -- More particles for nukes
+		elseif radius > 80 then
+			particleCount = math.min(18, math.floor(radius / 9))  -- More for large explosions
 		end
 
-		-- Check if this is a lightning weapon
-		local isLightning = weaponID and cache.weaponIsLightning[weaponID]
-
-		-- Check if this is a paralyze weapon
-		local isParalyze = weaponID and cache.weaponIsParalyze[weaponID]
-
-		-- Add explosion to list with radius from cached weapon data
-		local radius = 10 -- Default radius
-		if weaponID and cache.weaponExplosionRadius[weaponID] then
-			radius = cache.weaponExplosionRadius[weaponID]
-		end
-
-		-- Skip very small explosions (below threshold), except for lightning
-		if radius < 8 and not isLightning then
-			return
-		end
-
-		-- Create explosion entry
-		local explosion = {
-			x = px,
-			y = py,
-			z = pz,
-			radius = radius,
-			startTime = gameTime,
-			randomSeed = math.random() * 1000,  -- For consistent per-explosion randomness
-			rotationSpeed = (math.random() - 0.5) * 4,  -- Random rotation speed
-			particles = {},  -- Will store particle debris
-			isLightning = isLightning,
-			isParalyze = isParalyze
-		}
-
-		-- Add lightning sparks
-		if isLightning then
-			local sparkCount = 6 + math.floor(math.random() * 4) -- 6-9 sparks
-			for i = 1, sparkCount do
-				local angle = (i / sparkCount) * 2 * math.pi + (math.random() - 0.5) * 0.8
-				local speed = 15 + math.random() * 20
-				local vx = math.cos(angle) * speed
-				local vz = math.sin(angle) * speed
-
-				table.insert(explosion.particles, {
-					x = 0,
-					z = 0,
-					vx = vx,
-					vz = vz,
-					life = 0.3 + math.random() * 0.2, -- 0.3-0.5 seconds
-					size = 2 + math.random() * 2
-				})
-			end
-		end
-
-		table.insert(cache.explosions, explosion)
-
-		-- Add particle debris for larger explosions
-		if radius > 30 then
-			local explosion = cache.explosions[#cache.explosions]
-			local particleCount = math.min(12, math.floor(radius / 10))
-
-			-- Massive explosions get way more particles and additional effects
+		for i = 1, particleCount do
+			local angle = (i / particleCount) * 2 * math.pi + (math.random() - 0.5) * 0.5
+			local speed = 20 + math.random() * 30
+			-- Bigger explosions = faster flying particles
+			local speedMultiplier = 1
 			if radius > 150 then
-				particleCount = math.min(24, math.floor(radius / 8))  -- More particles for nukes
+				speedMultiplier = 4  -- Nukes fly MUCH further (was 2.5)
 			elseif radius > 80 then
-				particleCount = math.min(18, math.floor(radius / 9))  -- More for large explosions
+				speedMultiplier = 2.5  -- Large explosions fly further (was 1.8)
 			end
-
-			for i = 1, particleCount do
-				local angle = (i / particleCount) * 2 * math.pi + (math.random() - 0.5) * 0.5
-				local speed = 20 + math.random() * 30
-				-- Bigger explosions = faster flying particles
-				local speedMultiplier = 1
-				if radius > 150 then
-					speedMultiplier = 4  -- Nukes fly MUCH further (was 2.5)
-				elseif radius > 80 then
-					speedMultiplier = 2.5  -- Large explosions fly further (was 1.8)
-				end
-				-- Bigger particles for bigger explosions
-				local sizeMultiplier = 1
-				if radius > 150 then
-					sizeMultiplier = 1.5
-				elseif radius > 80 then
-					sizeMultiplier = 1.25
-				end
-				table.insert(explosion.particles, {
-					angle = angle,
-					speed = speed * speedMultiplier,
-					size = (2 + math.random() * 3) * 2 * sizeMultiplier,  -- Scaled by explosion size
-					lifetime = speedMultiplier * 1.5  -- Particles from bigger explosions live even longer (was 1x)
-				})
+			-- Bigger particles for bigger explosions
+			local sizeMultiplier = 1
+			if radius > 150 then
+				sizeMultiplier = 1.5
+			elseif radius > 80 then
+				sizeMultiplier = 1.25
 			end
+			table.insert(explosion.particles, {
+				angle = angle,
+				speed = speed * speedMultiplier,
+				size = (2 + math.random() * 3) * 2 * sizeMultiplier,  -- Scaled by explosion size
+				lifetime = speedMultiplier * 1.5  -- Particles from bigger explosions live even longer (was 1x)
+			})
 		end
 	end
 end
@@ -9132,22 +13550,44 @@ function widget:MapDrawCmd(playerID, cmdType, mx, my, mz, a, b, c)
 		return false
 	end
 
-	-- Store point markers for rendering (from any player)
+	-- Store point markers for rendering (from any player, but not spectators)
 	if cmdType == 'point' then
-		-- Get player's team
-		local _, _, _, teamID = Spring.GetPlayerInfo(playerID, false)
+		-- Get player's team and spec status
+		local _, _, isSpec, teamID = Spring.GetPlayerInfo(playerID, false)
 
-		-- Add marker to list
-		table.insert(miscState.mapMarkers, {
-			x = mx,
-			z = mz,
-			time = os.clock(),
-			teamID = teamID,
-			playerID = playerID
-		})
+		-- Add marker if player is not a spectator, or if spectator pings are enabled in minimap mode
+		local showMarker = not isSpec or (isMinimapMode and config.showSpectatorPings)
+		if showMarker then
+			-- Shorten lifetime of older nearby markers from the same player
+			local now = os.clock()
+			local proximityDist = 500  -- World units — "same general area"
+			for j = #miscState.mapMarkers, 1, -1 do
+				local old = miscState.mapMarkers[j]
+				if old.playerID == playerID then
+					local dx = old.x - mx
+					local dz = old.z - mz
+					if dx*dx + dz*dz < proximityDist * proximityDist then
+						-- Mark for early fade-out (0.5s from now)
+						if not old.fadeStart then
+							old.fadeStart = now
+						end
+					end
+				end
+			end
 
-		-- Force PIP content update to show marker immediately
-		pipR2T.contentNeedsUpdate = true
+			-- Add marker to list
+			table.insert(miscState.mapMarkers, {
+				x = mx,
+				z = mz,
+				time = now,
+				teamID = teamID,
+				playerID = playerID,
+				isSpectator = isSpec
+			})
+			
+			-- Force PIP content update to show marker immediately
+			pipR2T.contentNeedsUpdate = true
+		end
 	end
 
 	-- Only process our own mapmarks for placement logic (not from other players)
@@ -9236,6 +13676,9 @@ function widget:MapDrawCmd(playerID, cmdType, mx, my, mz, a, b, c)
 end
 
 function widget:IsAbove(mx, my)
+	-- Guard against uninitialized render dimensions
+	if not render.dim.l or not render.dim.r or not render.dim.b or not render.dim.t then return false end
+	
 	-- Claim mouse interaction when cursor is over the PIP window
 	if uiState.isAnimating then
 		-- During animation, check both start and end positions to ensure we capture the animated area
@@ -9254,6 +13697,9 @@ function widget:IsAbove(mx, my)
 		return mx >= uiState.minModeL and mx <= uiState.minModeL + buttonSize and my >= uiState.minModeB and my <= uiState.minModeB + buttonSize
 	else
 		-- In normal mode, check if over the PIP panel
+		if not AreExpandedDimensionsValid(render.dim) then
+			return false
+		end
 		return mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t
 	end
 end
@@ -9266,21 +13712,21 @@ function widget:MouseWheel(up, value)
 		if interactionState.trackingPlayerID then
 			return true
 		end
-
+		
 		if Spring.GetConfigInt("ScrollWheelSpeed", 1) > 0 then
 			if up then
-				cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, config.zoomMin)
+				cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, GetEffectiveZoomMin())
 			else
-				cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, config.zoomMax)
+				cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, GetEffectiveZoomMax())
 			end
 		else
 			if not up then
-				cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, config.zoomMin)
+				cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, GetEffectiveZoomMin())
 			else
-				cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, config.zoomMax)
+				cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, GetEffectiveZoomMax())
 			end
 		end
-
+		
 		-- Update locked icon position to follow mouse cursor's world position after zoom
 		-- This keeps the icon under the cursor as zoom changes
 		local mx, my = spFunc.GetMouseState()
@@ -9289,10 +13735,10 @@ function widget:MouseWheel(up, value)
 			miscState.worldIconLockedX = pos[1]
 			miscState.worldIconLockedZ = pos[3]
 		end
-
+		
 		return true
 	end
-
+	
 	if not uiState.inMinMode then
 		local mx, my = spFunc.GetMouseState()
 		if mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t then
@@ -9305,15 +13751,15 @@ function widget:MouseWheel(up, value)
 
 			if Spring.GetConfigInt("ScrollWheelSpeed", 1) > 0 then
 				if up then
-					cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, config.zoomMin)
+					cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, GetEffectiveZoomMin())
 				else
-					cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, config.zoomMax)
+					cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, GetEffectiveZoomMax())
 				end
 			else
 				if not up then
-					cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, config.zoomMin)
+					cameraState.targetZoom = math.max(cameraState.targetZoom / config.zoomWheel, GetEffectiveZoomMin())
 				else
-					cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, config.zoomMax)
+					cameraState.targetZoom = math.min(cameraState.targetZoom * config.zoomWheel, GetEffectiveZoomMax())
 				end
 			end
 
@@ -9350,36 +13796,21 @@ function widget:MouseWheel(up, value)
 				cameraState.zoomToCursorActive = false
 
 				-- Clamp BOTH current and target camera positions to respect margin
-				local pipWidth = render.dim.r - render.dim.l
-				local pipHeight = render.dim.t - render.dim.b
+				local pipWidth, pipHeight = GetEffectivePipDimensions()
 
 				-- Clamp current animated position
 				local currentVisibleWorldWidth = pipWidth / cameraState.zoom
 				local currentVisibleWorldHeight = pipHeight / cameraState.zoom
-				local currentSmallerDimension = math.min(currentVisibleWorldWidth, currentVisibleWorldHeight)
-				local currentMargin = currentSmallerDimension * config.mapEdgeMargin
 
-				local currentMinWcx = currentVisibleWorldWidth / 2 - currentMargin
-				local currentMaxWcx = mapInfo.mapSizeX - (currentVisibleWorldWidth / 2 - currentMargin)
-				local currentMinWcz = currentVisibleWorldHeight / 2 - currentMargin
-				local currentMaxWcz = mapInfo.mapSizeZ - (currentVisibleWorldHeight / 2 - currentMargin)
-
-				cameraState.wcx = math.min(math.max(cameraState.wcx, currentMinWcx), currentMaxWcx)
-				cameraState.wcz = math.min(math.max(cameraState.wcz, currentMinWcz), currentMaxWcz)
+				cameraState.wcx = ClampCameraAxis(cameraState.wcx, currentVisibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+				cameraState.wcz = ClampCameraAxis(cameraState.wcz, currentVisibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 				-- Clamp target position
 				local targetVisibleWorldWidth = pipWidth / cameraState.targetZoom
 				local targetVisibleWorldHeight = pipHeight / cameraState.targetZoom
-				local targetSmallerDimension = math.min(targetVisibleWorldWidth, targetVisibleWorldHeight)
-				local targetMargin = targetSmallerDimension * config.mapEdgeMargin
 
-				local targetMinWcx = targetVisibleWorldWidth / 2 - targetMargin
-				local targetMaxWcx = mapInfo.mapSizeX - (targetVisibleWorldWidth / 2 - targetMargin)
-				local targetMinWcz = targetVisibleWorldHeight / 2 - targetMargin
-				local targetMaxWcz = mapInfo.mapSizeZ - (targetVisibleWorldHeight / 2 - targetMargin)
-
-				cameraState.targetWcx = math.min(math.max(cameraState.targetWcx, targetMinWcx), targetMaxWcx)
-				cameraState.targetWcz = math.min(math.max(cameraState.targetWcz, targetMinWcz), targetMaxWcz)
+				cameraState.targetWcx = ClampCameraAxis(cameraState.targetWcx, targetVisibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+				cameraState.targetWcz = ClampCameraAxis(cameraState.targetWcz, targetVisibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 
 				RecalculateWorldCoordinates()
 				RecalculateGroundTextureCoordinates()
@@ -9391,6 +13822,8 @@ function widget:MouseWheel(up, value)
 end
 
 function widget:MousePress(mx, my, mButton)
+	-- Guard against uninitialized render dimensions
+	if not render.dim.l or not render.dim.r or not render.dim.b or not render.dim.t then return end
 
 	-- Track mapmark initiation position if mouse is over PiP (for point markers with double-click)
 	if mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t and not uiState.inMinMode then
@@ -9399,10 +13832,58 @@ function widget:MousePress(mx, my, mButton)
 		miscState.mapmarkInitTime = os.clock()
 	end
 
+	-- Handle click/drag on pip-minimap (if visible and not tracking player camera)
+	local mmBounds = interactionState.pipMinimapBounds
+	if mButton == 1 and mmBounds and not interactionState.trackingPlayerID and not uiState.inMinMode then
+		if mx >= mmBounds.l and mx <= mmBounds.r and my >= mmBounds.b and my <= mmBounds.t then
+			-- Convert screen position to world position and move camera there
+			local mmWidth = mmBounds.drawR - mmBounds.drawL
+			local mmHeight = mmBounds.drawT - mmBounds.drawB
+			local relX = (mx - mmBounds.drawL) / mmWidth
+			local relY = 1 - ((my - mmBounds.drawB) / mmHeight)  -- Flip Y (screen Y is bottom-up, map Z is top-down)
+			
+			-- Apply rotation to account for minimap rotation
+			local minimapRotation = Spring.GetMiniMapRotation()
+			if minimapRotation ~= 0 then
+				-- Convert to center-based coordinates (0.5, 0.5 is center)
+				local centeredX = relX - 0.5
+				local centeredY = relY - 0.5
+				
+				-- Apply rotation (positive direction - Spring's rotation is CCW)
+				local cosR = math.cos(minimapRotation)
+				local sinR = math.sin(minimapRotation)
+				local rotatedX = centeredX * cosR - centeredY * sinR
+				local rotatedY = centeredX * sinR + centeredY * cosR
+				
+				-- Convert back to 0-1 range
+				relX = rotatedX + 0.5
+				relY = rotatedY + 0.5
+			end
+			
+			local worldX = relX * mapInfo.mapSizeX
+			local worldZ = relY * mapInfo.mapSizeZ
+			
+			-- Set camera target
+			cameraState.targetWcx = math.max(0, math.min(mapInfo.mapSizeX, worldX))
+			cameraState.targetWcz = math.max(0, math.min(mapInfo.mapSizeZ, worldZ))
+			RecalculateWorldCoordinates()
+			RecalculateGroundTextureCoordinates()
+			
+			-- Clear unit tracking when clicking minimap
+			interactionState.areTracking = nil
+			
+			-- Start minimap dragging for continued movement
+			interactionState.pipMinimapDragging = true
+			interactionState.leftMousePressed = true
+			
+			return true  -- Consume the click
+		end
+	end
+
 	-- Handle ALT+click on world minimize/maximize icons - start tracking for drag vs click
 	local alt = Spring.GetModKeyState()
 	if config.showWorldIcon and mButton == 1 and alt and not uiState.isAnimating then
-		if (uiState.inMinMode and interactionState.worldMaximizeIconHovered) or
+		if (uiState.inMinMode and interactionState.worldMaximizeIconHovered) or 
 		   (not uiState.inMinMode and interactionState.worldMinimizeIconHovered) then
 			-- Start tracking for potential drag or click (screen coordinates only for window movement)
 			interactionState.worldIconClickStartX = mx
@@ -9447,8 +13928,8 @@ function widget:MousePress(mx, my, mButton)
 				interactionState.areFormationDragging = false
 			end
 
-			-- Start panning (but not when tracking player camera)
-			if not interactionState.trackingPlayerID then
+			-- Start panning (but not when tracking player camera or at minimum zoom)
+			if not interactionState.trackingPlayerID and not IsAtMinimumZoom(cameraState.zoom) then
 				interactionState.arePanning = true
 				interactionState.panStartX = (render.dim.l + render.dim.r) / 2
 				interactionState.panStartY = (render.dim.b + render.dim.t) / 2
@@ -9461,7 +13942,7 @@ function widget:MousePress(mx, my, mButton)
 			return true
 		end
 	end
-
+	
 	-- Check if we are centering the view, takes priority
 	if mButton == 1 then
 		if interactionState.areCentering then
@@ -9487,49 +13968,17 @@ function widget:MousePress(mx, my, mButton)
 		   mx >= uiState.minModeL and mx <= uiState.minModeL + math.floor(render.usedButtonSize*config.maximizeSizemult) and
 		   my >= uiState.minModeB and my <= uiState.minModeB + math.floor(render.usedButtonSize*config.maximizeSizemult) then
 			local altKey = Spring.GetModKeyState()
-
+			
 			-- If ALT is held or middle mouse, start tracking for drag (to move window)
 			if altKey or mButton == 2 then
 				interactionState.minimizeButtonClickStartX = mx
 				interactionState.minimizeButtonClickStartY = my
 				return true
 			end
-
+			
 			-- Normal maximize (no ALT, left click only)
 			if mButton == 1 then
-				-- Start maximize animation - restore saved dimensions
-				local buttonSize = math.floor(render.usedButtonSize*config.maximizeSizemult)
-
-				-- Temporarily set dimensions to saved values to check if they're valid
-				render.dim.l = uiState.savedDimensions.l
-				render.dim.r = uiState.savedDimensions.r
-				render.dim.b = uiState.savedDimensions.b
-				render.dim.t = uiState.savedDimensions.t
-				CorrectScreenPosition()
-
-				-- Update camera to tracked units immediately before maximizing
-				if interactionState.areTracking then
-					UpdateTracking()
-				end
-				RecalculateWorldCoordinates()
-				RecalculateGroundTextureCoordinates()
-
-				uiState.animStartDim = {
-					l = uiState.minModeL,
-					r = uiState.minModeL + buttonSize,
-					b = uiState.minModeB,
-					t = uiState.minModeB + buttonSize
-				}
-				uiState.animEndDim = {
-					l = render.dim.l,
-					r = render.dim.r,
-					b = render.dim.b,
-					t = render.dim.t
-				}
-				uiState.animationProgress = 0
-				uiState.isAnimating = true
-				uiState.inMinMode = false
-				miscState.hasOpenedPIPThisGame = true
+				StartMaximizeAnimation()
 				-- Update hover state after maximizing to check if mouse is over the restored PIP
 				interactionState.isMouseOverPip = (mx >= render.dim.l and mx <= render.dim.r and my >= render.dim.b and my <= render.dim.t)
 				return true
@@ -9570,6 +14019,8 @@ function widget:MousePress(mx, my, mButton)
 
 			interactionState.middleMousePressed = true
 			interactionState.middleMouseMoved = false
+			interactionState.middleMousePressX = mx
+			interactionState.middleMousePressY = my
 			interactionState.panStartX = (render.dim.l + render.dim.r) / 2
 			interactionState.panStartY = (render.dim.b + render.dim.t) / 2
 			return true
@@ -9582,23 +14033,25 @@ function widget:MousePress(mx, my, mButton)
 		-- Was it a left click? -> check buttons
 		if mButton == 1 then
 
-			-- Resize thing (check first - highest priority)
-			if render.dim.r-mx + my-render.dim.b <= render.usedButtonSize then
-				uiState.areResizing = true
-				return true
+			-- Resize thing (check first - highest priority) - disabled in minimap mode
+			if not (isMinimapMode and config.minimapModeHideMoveResize) then
+				if render.dim.r-mx + my-render.dim.b <= render.usedButtonSize then
+					uiState.areResizing = true
+					return true
+				end
 			end
 
-			-- Minimizing? (or ALT+drag/middle drag to move window)
-			if mx >= render.dim.r - render.usedButtonSize and my >= render.dim.t - render.usedButtonSize then
+			-- Minimizing? (or ALT+drag/middle drag to move window) - disabled in minimap mode
+			if not isMinimapMode and mx >= render.dim.r - render.usedButtonSize and my >= render.dim.t - render.usedButtonSize then
 				local altKey = Spring.GetModKeyState()
-
+				
 				-- If ALT is held or middle mouse, start tracking for drag (to move window)
 				if altKey or mButton == 2 then
 					interactionState.minimizeButtonClickStartX = mx
 					interactionState.minimizeButtonClickStartY = my
 					return true
 				end
-
+				
 				-- Normal minimize (no ALT, left click only)
 				local sw, sh = Spring.GetWindowGeometry()
 
@@ -9650,6 +14103,10 @@ function widget:MousePress(mx, my, mButton)
 					gl.DeleteTexture(pipR2T.contentTex)
 					pipR2T.contentTex = nil
 				end
+				if pipR2T.unitsTex then
+					gl.DeleteTexture(pipR2T.unitsTex)
+					pipR2T.unitsTex = nil
+				end
 				if pipR2T.frameBackgroundTex then
 					gl.DeleteTexture(pipR2T.frameBackgroundTex)
 					pipR2T.frameBackgroundTex = nil
@@ -9678,28 +14135,51 @@ function widget:MousePress(mx, my, mButton)
 				end
 				local visibleButtons = {}
 				for i = 1, #buttons do
-					-- Show pip_track button if has selection or is tracking units
-					if buttons[i].command == 'pip_track' then
-						if hasSelection or isTracking then
-							visibleButtons[#visibleButtons + 1] = buttons[i]
+					local btn = buttons[i]
+					-- In minimap mode, skip move button if configured
+					local skipButton = false
+					if isMinimapMode and config.minimapModeHideMoveResize then
+						if btn.tooltipKey == 'ui.pip.move' then
+							skipButton = true
 						end
-					-- Show pip_trackplayer button if lockcamera is available or already tracking
-					elseif buttons[i].command == 'pip_trackplayer' then
-						if showPlayerTrackButton then
-							visibleButtons[#visibleButtons + 1] = buttons[i]
+					end
+					-- In minimap mode, skip switch and copy buttons (keep pip_track and pip_trackplayer)
+					-- Allow pip_view for spectators with fullview
+					if isMinimapMode then
+						if btn.command == 'pip_switch' or btn.command == 'pip_copy' then
+							skipButton = true
+						elseif btn.command == 'pip_view' then
+							local _, fullview = Spring.GetSpectatingState()
+							if not fullview then
+								skipButton = true
+							end
 						end
-					-- Show pip_view button only for spectators
-					elseif buttons[i].command == 'pip_view' then
-						local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
-						if spec then
-							visibleButtons[#visibleButtons + 1] = buttons[i]
+					end
+					
+					if not skipButton then
+						-- Show pip_track button if has selection or is tracking units
+						if btn.command == 'pip_track' then
+							if hasSelection or isTracking then
+								visibleButtons[#visibleButtons + 1] = btn
+							end
+						-- Show pip_trackplayer button if lockcamera is available or already tracking
+						elseif btn.command == 'pip_trackplayer' then
+							if showPlayerTrackButton then
+								visibleButtons[#visibleButtons + 1] = btn
+							end
+						-- Show pip_view button only for spectators
+						elseif btn.command == 'pip_view' then
+							local _, _, spec = spFunc.GetPlayerInfo(Spring.GetMyPlayerID(), false)
+							if spec then
+								visibleButtons[#visibleButtons + 1] = btn
+							end
+						else
+							visibleButtons[#visibleButtons + 1] = btn
 						end
-					else
-						visibleButtons[#visibleButtons + 1] = buttons[i]
 					end
 				end
 				local buttonIndex = 1 + math.floor((mx - render.dim.l) / render.usedButtonSize)
-
+				
 				local pressedButton = visibleButtons[buttonIndex]
 				if pressedButton then
 					pressedButton.OnPress()
@@ -9709,6 +14189,19 @@ function widget:MousePress(mx, my, mButton)
 
 			-- Missed buttons with left click, so what did we click on?
 			local wx, wz = PipToWorldCoords(mx, my)
+			
+			-- In minimap mode with leftButtonPansCamera enabled, left-click moves the world camera
+			if isMinimapMode and config.leftButtonPansCamera then
+				local _, cmdID = Spring.GetActiveCommand()
+				-- Only move world camera if there's no active command
+				if not cmdID or cmdID == 0 then
+					local groundHeight = spFunc.GetGroundHeight(wx, wz) or 0
+					Spring.SetCameraTarget(wx, groundHeight, wz, 0.2)
+					interactionState.worldCameraDragging = true
+					return true
+				end
+			end
+			
 			local _, cmdID = Spring.GetActiveCommand()
 			if cmdID then
 				-- Check if this is a build command with shift modifier for drag-to-build
@@ -9951,27 +14444,114 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 	-- Get modifier key states
 	local alt, ctrl, meta, shift = Spring.GetModKeyState()
 
-	-- Handle world icon drag (ALT+drag to move PIP window on screen)
+	-- Handle world camera dragging (leftButtonPansCamera mode in minimap mode)
+	if interactionState.worldCameraDragging then
+		-- Convert PIP coordinates to world coordinates and move world camera
+		local wx, wz = PipToWorldCoords(mx, my)
+		local groundHeight = spFunc.GetGroundHeight(wx, wz) or 0
+		Spring.SetCameraTarget(wx, groundHeight, wz, 0.04)
+		return true
+	end
+
+	-- Handle pip-minimap dragging (moves PIP camera)
+	if interactionState.pipMinimapDragging then
+		local mmBounds = interactionState.pipMinimapBounds
+		if mmBounds then
+			-- Convert screen position to world position and move camera there
+			local mmWidth = mmBounds.drawR - mmBounds.drawL
+			local mmHeight = mmBounds.drawT - mmBounds.drawB
+			local relX = (mx - mmBounds.drawL) / mmWidth
+			local relY = 1 - ((my - mmBounds.drawB) / mmHeight)  -- Flip Y (screen Y is bottom-up, map Z is top-down)
+			
+			-- Apply inverse rotation to account for minimap rotation
+			local minimapRotation = Spring.GetMiniMapRotation()
+			if minimapRotation ~= 0 then
+				-- Convert to center-based coordinates (0.5, 0.5 is center)
+				local centeredX = relX - 0.5
+				local centeredY = relY - 0.5
+				
+				-- Apply rotation (positive direction - Spring's rotation is CCW)
+				local cosR = math.cos(minimapRotation)
+				local sinR = math.sin(minimapRotation)
+				local rotatedX = centeredX * cosR - centeredY * sinR
+				local rotatedY = centeredX * sinR + centeredY * cosR
+				-- Convert back to 0-1 range
+				relX = rotatedX + 0.5
+				relY = rotatedY + 0.5
+			end
+			
+			local worldX = relX * mapInfo.mapSizeX
+			local worldZ = relY * mapInfo.mapSizeZ
+			
+			-- Apply map edge margin constraints (same as UpdateTracking)
+			local pipWidth, pipHeight = GetEffectivePipDimensions()
+			local visibleWorldWidth = pipWidth / cameraState.zoom
+			local visibleWorldHeight = pipHeight / cameraState.zoom
+			
+			-- Set camera target clamped to per-axis margins (centers on axis when view exceeds map)
+			-- In minimap mode at minimum zoom, force center on map
+			if IsAtMinimumZoom(cameraState.zoom) then
+				cameraState.targetWcx = mapInfo.mapSizeX / 2
+				cameraState.targetWcz = mapInfo.mapSizeZ / 2
+			else
+				cameraState.targetWcx = ClampCameraAxis(worldX, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+				cameraState.targetWcz = ClampCameraAxis(worldZ, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
+			end
+			-- Also set current position for immediate response during drag
+			cameraState.wcx = cameraState.targetWcx
+			cameraState.wcz = cameraState.targetWcz
+			RecalculateWorldCoordinates()
+			RecalculateGroundTextureCoordinates()
+		end
+		return true
+	end
+
+	-- Handle world icon drag (ALT+drag to move PIP camera position)
 	if alt and interactionState.worldIconClickStartX ~= 0 and not uiState.isAnimating then
 		local dragThreshold = 8  -- Pixels before considering it a drag
 		local dragDistX = math.abs(mx - interactionState.worldIconClickStartX)
 		local dragDistY = math.abs(my - interactionState.worldIconClickStartY)
-
+		
 		if dragDistX > dragThreshold or dragDistY > dragThreshold or interactionState.worldIconDragging then
 			interactionState.worldIconDragging = true
-
-			-- Move PIP window on screen (like the move button does)
-			render.dim.l = render.dim.l + dx
-			render.dim.r = render.dim.r + dx
-			render.dim.b = render.dim.b + dy
-			render.dim.t = render.dim.t + dy
-			CorrectScreenPosition()
-			RecalculateWorldCoordinates()
-			RecalculateGroundTextureCoordinates()
-
-			-- Update guishader blur dimensions
-			UpdateGuishaderBlur()
-
+			
+			-- Move PIP camera to keep the world position under the cursor
+			-- Get current world position under cursor and previous world position
+			local result, pos = Spring.TraceScreenRay(mx, my, true, false, false, true)
+			if result == "ground" and pos then
+				-- On first drag frame, store the initial world position under cursor
+				if not interactionState.worldIconDragStartWorldX then
+					interactionState.worldIconDragStartWorldX = pos[1]
+					interactionState.worldIconDragStartWorldZ = pos[3]
+					-- Store the initial camera position
+					interactionState.worldIconDragStartCamX = cameraState.wcx
+					interactionState.worldIconDragStartCamZ = cameraState.wcz
+				end
+				
+				-- Calculate how far the cursor has moved in world coordinates
+				local worldDeltaX = pos[1] - interactionState.worldIconDragStartWorldX
+				local worldDeltaZ = pos[3] - interactionState.worldIconDragStartWorldZ
+				
+				-- Move camera to compensate (opposite direction to keep world point under cursor)
+				cameraState.targetWcx = interactionState.worldIconDragStartCamX + worldDeltaX
+				cameraState.targetWcz = interactionState.worldIconDragStartCamZ + worldDeltaZ
+				
+				-- Clamp to map bounds
+				cameraState.targetWcx = math.max(0, math.min(mapInfo.mapSizeX, cameraState.targetWcx))
+				cameraState.targetWcz = math.max(0, math.min(mapInfo.mapSizeZ, cameraState.targetWcz))
+				
+				-- Apply immediately for responsiveness
+				cameraState.wcx = cameraState.targetWcx
+				cameraState.wcz = cameraState.targetWcz
+				
+				-- Also update locked icon position so it follows the drag
+				miscState.worldIconLockedX = cameraState.wcx
+				miscState.worldIconLockedZ = cameraState.wcz
+				
+				RecalculateWorldCoordinates()
+				RecalculateGroundTextureCoordinates()
+			end
+			
 			return true
 		end
 	end
@@ -9981,29 +14561,29 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 		local dragThreshold = 8  -- Pixels before considering it a drag
 		local dragDistX = math.abs(mx - interactionState.minimizeButtonClickStartX)
 		local dragDistY = math.abs(my - interactionState.minimizeButtonClickStartY)
-
+		
 		if dragDistX > dragThreshold or dragDistY > dragThreshold or interactionState.minimizeButtonDragging then
 			interactionState.minimizeButtonDragging = true
-
+			
 			if uiState.inMinMode then
 				-- Move the minimized button position
 				uiState.minModeL = uiState.minModeL + dx
 				uiState.minModeB = uiState.minModeB + dy
-
+				
 				-- Clamp to screen bounds
 				local buttonSize = math.floor(render.usedButtonSize * config.maximizeSizemult)
 				local screenMarginPx = math.floor(config.screenMargin * render.vsy)
 				uiState.minModeL = math.max(screenMarginPx, math.min(render.vsx - screenMarginPx - buttonSize, uiState.minModeL))
 				uiState.minModeB = math.max(screenMarginPx, math.min(render.vsy - screenMarginPx - buttonSize, uiState.minModeB))
-
+				
 				-- Also update saved dimensions so they stay relative to the button position
-				if uiState.savedDimensions then
+				if AreExpandedDimensionsValid(uiState.savedDimensions) then
 					uiState.savedDimensions.l = uiState.savedDimensions.l + dx
 					uiState.savedDimensions.r = uiState.savedDimensions.r + dx
 					uiState.savedDimensions.b = uiState.savedDimensions.b + dy
 					uiState.savedDimensions.t = uiState.savedDimensions.t + dy
 				end
-
+				
 				-- Update guishader blur dimensions
 				UpdateGuishaderBlur()
 			else
@@ -10015,11 +14595,11 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 				CorrectScreenPosition()
 				RecalculateWorldCoordinates()
 				RecalculateGroundTextureCoordinates()
-
+				
 				-- Update guishader blur dimensions
 				UpdateGuishaderBlur()
 			end
-
+			
 			return true
 		end
 	end
@@ -10052,12 +14632,15 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 					return  -- Don't pan when tracking player camera
 				end
 			end
-			interactionState.arePanning = true
-			interactionState.areTracking = nil
-			-- Cancel any ongoing smooth animation by setting target to current position
-			cameraState.targetWcx = cameraState.wcx
-			cameraState.targetWcz = cameraState.wcz
-			cameraState.zoomToCursorActive = false
+			-- Don't pan when at minimum zoom in minimap mode
+			if not IsAtMinimumZoom(cameraState.zoom) then
+				interactionState.arePanning = true
+				interactionState.areTracking = nil
+				-- Cancel any ongoing smooth animation by setting target to current position
+				cameraState.targetWcx = cameraState.wcx
+				cameraState.targetWcz = cameraState.wcz
+				cameraState.zoomToCursorActive = false
+			end
 		end
 	end
 
@@ -10075,12 +14658,15 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 					return  -- Don't pan when tracking player camera
 				end
 			end
-			interactionState.arePanning = true
-			interactionState.areTracking = nil
-			-- Cancel any ongoing smooth animation by setting target to current position
-			cameraState.targetWcx = cameraState.wcx
-			cameraState.targetWcz = cameraState.wcz
-			cameraState.zoomToCursorActive = false
+			-- Don't pan when at minimum zoom in minimap mode
+			if not IsAtMinimumZoom(cameraState.zoom) then
+				interactionState.arePanning = true
+				interactionState.areTracking = nil
+				-- Cancel any ongoing smooth animation by setting target to current position
+				cameraState.targetWcx = cameraState.wcx
+				cameraState.targetWcz = cameraState.wcz
+				cameraState.zoomToCursorActive = false
+			end
 		end
 	end
 
@@ -10126,57 +14712,75 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 					return  -- Don't pan when tracking player camera
 				end
 			end
-			interactionState.arePanning = true
-			interactionState.areTracking = nil
-			-- Cancel any ongoing smooth animation by setting target to current position
-			cameraState.targetWcx = cameraState.wcx
-			cameraState.targetWcz = cameraState.wcz
-			cameraState.zoomToCursorActive = false
+			-- Don't pan when at minimum zoom in minimap mode
+			if not IsAtMinimumZoom(cameraState.zoom) then
+				interactionState.arePanning = true
+				interactionState.areTracking = nil
+				-- Cancel any ongoing smooth animation by setting target to current position
+				cameraState.targetWcx = cameraState.wcx
+				cameraState.targetWcz = cameraState.wcz
+				cameraState.zoomToCursorActive = false
+			end
 		end
 	end
 
 	if uiState.areResizing then
 		local minSize = math.floor(config.minPanelSize*render.widgetScale)
 		local maxSize = math.floor(render.vsy * config.maxPanelSizeVsy)
-
+		
 		-- Apply width constraint
-		if render.dim.r+dx - render.dim.l >= minSize then
-			local newWidth = render.dim.r + dx - render.dim.l
-			if newWidth <= maxSize then
+		local currentWidth = render.dim.r - render.dim.l
+		local newWidth = render.dim.r + dx - render.dim.l
+		if newWidth >= minSize then
+			-- Allow resize if within max, OR if shrinking toward max (window was oversized)
+			if newWidth <= maxSize or newWidth < currentWidth then
 				render.dim.r = render.dim.r + dx
+				-- Clamp to maxSize if still above it after shrink
+				if render.dim.r - render.dim.l > maxSize then
+					render.dim.r = render.dim.l + maxSize
+				end
 			end
 		end
-
-		-- Apply height constraint
-		if render.dim.t-dy - render.dim.b >= minSize then
-			local newHeight = render.dim.t - dy - render.dim.b
-			if newHeight <= maxSize then
+		
+		-- Apply height constraint  
+		local currentHeight = render.dim.t - render.dim.b
+		local newHeight = render.dim.t - dy - render.dim.b
+		if newHeight >= minSize then
+			-- Allow resize if within max, OR if shrinking toward max (window was oversized)
+			if newHeight <= maxSize or newHeight < currentHeight then
 				render.dim.b = render.dim.b + dy
+				-- Clamp to maxSize if still above it after shrink
+				if render.dim.t - render.dim.b > maxSize then
+					render.dim.b = render.dim.t - maxSize
+				end
 			end
 		end
-
+		
 		CorrectScreenPosition()
-		RecalculateWorldCoordinates()
-		RecalculateGroundTextureCoordinates()
 
 		-- Update guishader blur dimensions
 		UpdateGuishaderBlur()
 
 		-- Clamp camera position to respect margin after resize
-		local pipWidth = render.dim.r - render.dim.l
-		local pipHeight = render.dim.t - render.dim.b
+		local pipWidth, pipHeight = GetEffectivePipDimensions()
+
+		-- Update dynamic min zoom so full map is visible at max zoom-out
+		-- Use raw (non-rotated) dimensions so zoom limit is the same regardless of rotation
+		if not isMinimapMode then
+			local rawW = render.dim.r - render.dim.l
+			local rawH = render.dim.t - render.dim.b
+			pipModeMinZoom = math.min(rawW, rawH) / math.max(mapInfo.mapSizeX, mapInfo.mapSizeZ)
+			if cameraState.zoom < pipModeMinZoom then
+				cameraState.zoom = pipModeMinZoom
+				cameraState.targetZoom = pipModeMinZoom
+			end
+		end
+
 		local visibleWorldWidth = pipWidth / cameraState.zoom
 		local visibleWorldHeight = pipHeight / cameraState.zoom
-		local smallerVisibleDimension = math.min(visibleWorldWidth, visibleWorldHeight)
-		local margin = smallerVisibleDimension * config.mapEdgeMargin
 
-		local minWcx = visibleWorldWidth / 2 - margin
-		local maxWcx = mapInfo.mapSizeX - (visibleWorldWidth / 2 - margin)
-		local minWcz = visibleWorldHeight / 2 - margin
-		local maxWcz = mapInfo.mapSizeZ - (visibleWorldHeight / 2 - margin)
-
-		cameraState.wcx = math.min(math.max(cameraState.wcx, minWcx), maxWcx)
-		cameraState.wcz = math.min(math.max(cameraState.wcz, minWcz), maxWcz)
+		cameraState.wcx = ClampCameraAxis(cameraState.wcx, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+		cameraState.wcz = ClampCameraAxis(cameraState.wcz, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 		cameraState.targetWcx = cameraState.wcx
 		cameraState.targetWcz = cameraState.wcz
 		RecalculateWorldCoordinates()
@@ -10195,45 +14799,54 @@ function widget:MouseMove(mx, my, dx, dy, mButton)
 		UpdateGuishaderBlur()
 
 	elseif interactionState.arePanning then
+		-- In minimap mode at minimum zoom, don't allow panning - keep centered on map
+		if IsAtMinimumZoom(cameraState.zoom) then
+			cameraState.wcx = mapInfo.mapSizeX / 2
+			cameraState.wcz = mapInfo.mapSizeZ / 2
+			cameraState.targetWcx = cameraState.wcx
+			cameraState.targetWcz = cameraState.wcz
+			return
+		end
+		
 		-- Pan the camera based on mouse movement (only if there's movement)
 		if dx ~= 0 or dy ~= 0 then
+			-- Get current minimap rotation (must fetch fresh)
+			local minimapRotation = Spring.GetMiniMapRotation and Spring.GetMiniMapRotation() or 0
+			
 			-- Apply inverse rotation to mouse deltas if minimap is rotated
 			local panDx, panDy = dx, dy
-			if render.minimapRotation ~= 0 then
-				local cosR = math.cos(-render.minimapRotation)
-				local sinR = math.sin(-render.minimapRotation)
+			if minimapRotation ~= 0 then
+				local cosR = math.cos(-minimapRotation)
+				local sinR = math.sin(-minimapRotation)
 				panDx = dx * cosR - dy * sinR
 				panDy = dx * sinR + dy * cosR
 			end
-
+			
 			-- Calculate the visible world area at current zoom
 			-- At 90/270 degrees, swap dimensions for correct panning limits
 			local pipWidth = render.dim.r - render.dim.l
 			local pipHeight = render.dim.t - render.dim.b
 			local visibleWorldWidth = pipWidth / cameraState.zoom
 			local visibleWorldHeight = pipHeight / cameraState.zoom
-
-			if render.minimapRotation then
-				local rotDeg = math.abs(render.minimapRotation * 180 / math.pi) % 180
+			
+			if minimapRotation ~= 0 then
+				local rotDeg = math.abs(minimapRotation * 180 / math.pi) % 180
 				if rotDeg > 45 and rotDeg < 135 then
 					visibleWorldWidth, visibleWorldHeight = visibleWorldHeight, visibleWorldWidth
 				end
 			end
 
-			-- Use the smaller dimension for consistent visual margin
-			local smallerVisibleDimension = math.min(visibleWorldWidth, visibleWorldHeight)
-			local margin = smallerVisibleDimension * config.mapEdgeMargin
-
-			-- Calculate min/max camera positions to keep margin from map edges
-			local minWcx = visibleWorldWidth / 2 - margin
-			local maxWcx = mapInfo.mapSizeX - (visibleWorldWidth / 2 - margin)
-			local minWcz = visibleWorldHeight / 2 - margin
-			local maxWcz = mapInfo.mapSizeZ - (visibleWorldHeight / 2 - margin)
-
-			-- Apply panning with margin-based limits (using rotated deltas)
-			cameraState.wcx = math.min(math.max(cameraState.wcx - panDx / cameraState.zoom, minWcx), maxWcx)
-			cameraState.wcz = math.min(math.max(cameraState.wcz + panDy / cameraState.zoom, minWcz), maxWcz)
+			-- Apply panning with per-axis margin limits (using rotated deltas, centers on axis when view exceeds map)
+			cameraState.wcx = ClampCameraAxis(cameraState.wcx - panDx / cameraState.zoom, visibleWorldWidth, mapInfo.mapSizeX, config.mapEdgeMargin)
+			cameraState.wcz = ClampCameraAxis(cameraState.wcz + panDy / cameraState.zoom, visibleWorldHeight, mapInfo.mapSizeZ, config.mapEdgeMargin)
 			cameraState.targetWcx, cameraState.targetWcz = cameraState.wcx, cameraState.wcz  -- Panning updates instantly, not smoothly
+			
+			-- Update locked icon position so world icon follows camera during panning
+			if miscState.worldIconLockedX then
+				miscState.worldIconLockedX = cameraState.wcx
+				miscState.worldIconLockedZ = cameraState.wcz
+			end
+			
 			RecalculateWorldCoordinates()
 			RecalculateGroundTextureCoordinates()
 
@@ -10336,6 +14949,18 @@ function widget:KeyRelease(key)
 end
 
 function widget:MouseRelease(mx, my, mButton)
+	-- Handle world camera drag release (leftButtonPansCamera mode)
+	if mButton == 1 and interactionState.worldCameraDragging then
+		interactionState.worldCameraDragging = false
+		return true
+	end
+
+	-- Handle pip-minimap drag release
+	if mButton == 1 and interactionState.pipMinimapDragging then
+		interactionState.pipMinimapDragging = false
+		return true
+	end
+
 	-- Handle world icon click/drag release
 	if mButton == 1 and interactionState.worldIconClickStartX ~= 0 then
 		local wasDragging = interactionState.worldIconDragging
@@ -10343,46 +14968,23 @@ function widget:MouseRelease(mx, my, mButton)
 		local dragDistX = math.abs(mx - interactionState.worldIconClickStartX)
 		local dragDistY = math.abs(my - interactionState.worldIconClickStartY)
 		local wasClick = dragDistX <= dragThreshold and dragDistY <= dragThreshold
-
+		
 		-- Reset drag state
 		interactionState.worldIconClickStartX = 0
 		interactionState.worldIconClickStartY = 0
 		interactionState.worldIconDragging = false
-
+		interactionState.worldIconDragStartWorldX = nil
+		interactionState.worldIconDragStartWorldZ = nil
+		interactionState.worldIconDragStartCamX = nil
+		interactionState.worldIconDragStartCamZ = nil
+		
 		-- If it was a click (not a drag), trigger minimize/maximize
 		if wasClick and not uiState.isAnimating then
 			local buttonSize = math.floor(render.usedButtonSize*config.maximizeSizemult)
-
+			
 			if uiState.inMinMode then
 				-- Maximize from world icon
-				render.dim.l = uiState.savedDimensions.l
-				render.dim.r = uiState.savedDimensions.r
-				render.dim.b = uiState.savedDimensions.b
-				render.dim.t = uiState.savedDimensions.t
-				CorrectScreenPosition()
-
-				if interactionState.areTracking then
-					UpdateTracking()
-				end
-				RecalculateWorldCoordinates()
-				RecalculateGroundTextureCoordinates()
-
-				uiState.animStartDim = {
-					l = uiState.minModeL,
-					r = uiState.minModeL + buttonSize,
-					b = uiState.minModeB,
-					t = uiState.minModeB + buttonSize
-				}
-				uiState.animEndDim = {
-					l = render.dim.l,
-					r = render.dim.r,
-					b = render.dim.b,
-					t = render.dim.t
-				}
-				uiState.animationProgress = 0
-				uiState.isAnimating = true
-				uiState.inMinMode = false
-				miscState.hasOpenedPIPThisGame = true
+				StartMaximizeAnimation()
 				interactionState.isMouseOverPip = false
 			else
 				-- Minimize from world icon
@@ -10421,52 +15023,23 @@ function widget:MouseRelease(mx, my, mButton)
 		local dragDistX = math.abs(mx - interactionState.minimizeButtonClickStartX)
 		local dragDistY = math.abs(my - interactionState.minimizeButtonClickStartY)
 		local wasClick = dragDistX <= dragThreshold and dragDistY <= dragThreshold
-
+		
 		-- Reset drag state
 		interactionState.minimizeButtonClickStartX = 0
 		interactionState.minimizeButtonClickStartY = 0
 		interactionState.minimizeButtonDragging = false
-
+		
 		-- If it was a click (not a drag) with left mouse, trigger minimize or maximize
 		-- Middle mouse click does nothing (just drag to move)
 		if wasClick and mButton == 1 and not uiState.isAnimating then
 			if uiState.inMinMode then
 				-- Maximize (we were in minimized mode)
-				local buttonSize = math.floor(render.usedButtonSize*config.maximizeSizemult)
-
-				render.dim.l = uiState.savedDimensions.l
-				render.dim.r = uiState.savedDimensions.r
-				render.dim.b = uiState.savedDimensions.b
-				render.dim.t = uiState.savedDimensions.t
-				CorrectScreenPosition()
-
-				if interactionState.areTracking then
-					UpdateTracking()
-				end
-				RecalculateWorldCoordinates()
-				RecalculateGroundTextureCoordinates()
-
-				uiState.animStartDim = {
-					l = uiState.minModeL,
-					r = uiState.minModeL + buttonSize,
-					b = uiState.minModeB,
-					t = uiState.minModeB + buttonSize
-				}
-				uiState.animEndDim = {
-					l = render.dim.l,
-					r = render.dim.r,
-					b = render.dim.b,
-					t = render.dim.t
-				}
-				uiState.animationProgress = 0
-				uiState.isAnimating = true
-				uiState.inMinMode = false
-				miscState.hasOpenedPIPThisGame = true
+				StartMaximizeAnimation()
 				interactionState.isMouseOverPip = false
 			else
 				-- Minimize (we were in maximized mode)
 				local sw, sh = Spring.GetWindowGeometry()
-
+				
 				-- Save current dimensions before minimizing
 				uiState.savedDimensions = {
 					l = render.dim.l,
@@ -10514,6 +15087,10 @@ function widget:MouseRelease(mx, my, mButton)
 				if pipR2T.contentTex then
 					gl.DeleteTexture(pipR2T.contentTex)
 					pipR2T.contentTex = nil
+				end
+				if pipR2T.unitsTex then
+					gl.DeleteTexture(pipR2T.unitsTex)
+					pipR2T.unitsTex = nil
 				end
 				if pipR2T.frameBackgroundTex then
 					gl.DeleteTexture(pipR2T.frameBackgroundTex)
@@ -10877,10 +15454,84 @@ function widget:MouseRelease(mx, my, mButton)
 	if mButton == 2 then
 		if interactionState.middleMousePressed then
 			-- Middle mouse was pressed in our window
-			-- Whether it was a drag or just a click, stop panning
+			-- Check if it was a click (not a drag) - if so, teleport world camera
+			local wasClick = not interactionState.middleMouseMoved
+			
+			if wasClick and config.middleClickTeleport then
+				-- Convert click position to world coordinates
+				local wx, wz = PipToWorldCoords(interactionState.middleMousePressX, interactionState.middleMousePressY)
+				local groundHeight = spFunc.GetGroundHeight(wx, wz) or 0
+				
+				-- Get current camera state
+				local curCamState = Spring.GetCameraState()
+				if curCamState then
+					-- Set position
+					curCamState.px = wx
+					curCamState.pz = wz
+					
+					-- Calculate zoom level for teleport
+					local targetZoom
+					local adjustZoom = true
+					
+					if isMinimapMode then
+						-- In minimap mode, preserve current camera zoom but apply offset and limits
+						-- Get current world camera zoom equivalent from height/dist
+						local referenceHeight = 1200  -- At zoom 1.0
+						local currentHeight = curCamState.height or curCamState.dist or 2000
+						local currentZoom = referenceHeight / currentHeight
+						
+						-- Clamp to min/max bounds
+						targetZoom = math.max(config.minimapMiddleClickZoomMin, math.min(config.minimapMiddleClickZoomMax, currentZoom))
+						
+						-- Only adjust if actually changed
+						if math.abs(targetZoom - currentZoom) < 0.01 then
+							adjustZoom = false
+						end
+					else
+						-- Calculate world camera zoom based on PIP zoom
+						-- PIP zoom is in range [zoomMin, zoomMax], higher = more zoomed in
+						-- World camera height: higher height = more zoomed out
+						local pipZoom = cameraState.zoom
+						-- Apply zoom offset (slightly more zoomed out than PIP)
+						targetZoom = pipZoom - config.middleClickZoomOffset
+
+						-- Clamp to configured bounds
+						targetZoom = math.max(config.middleClickZoomMin, math.min(config.middleClickZoomMax, targetZoom))
+					end
+					
+					-- Only adjust height/dist if needed
+					if adjustZoom then
+						-- Convert zoom to camera height/dist: height = referenceHeight / zoom
+						-- Reference: at zoom 0.5, height is ~2400 elmos (typical gameplay view)
+						local referenceHeight = 1200  -- At zoom 1.0
+						local targetHeight = referenceHeight / targetZoom
+						
+						-- Set height/dist based on camera type
+						-- TA camera uses "height", Spring camera uses "dist"
+						if curCamState.name == "ta" or curCamState.name == "ov" then
+							curCamState.height = targetHeight
+						elseif curCamState.name == "spring" then
+							curCamState.dist = targetHeight
+						else
+							-- For other cameras (free, etc), try both
+							curCamState.height = targetHeight
+							curCamState.dist = targetHeight
+						end
+					end
+					
+					Spring.SetCameraState(curCamState, 0.2)
+				else
+					-- Fallback: just move camera target without zoom change
+					Spring.SetCameraTarget(wx, groundHeight, wz, 0.2)
+				end
+			end
+			
+			-- Stop panning
 			interactionState.arePanning = false
 			interactionState.middleMousePressed = false
 			interactionState.middleMouseMoved = false
+			interactionState.middleMousePressX = 0
+			interactionState.middleMousePressY = 0
 		elseif interactionState.panToggleMode then
 			-- Middle mouse released while in toggle mode (click was outside our window) - ignore
 		end
