@@ -4,12 +4,15 @@
 
 const int COLOR_INDEX_MASK = 0x0000FFFF;
 const int CAPTURE_BAR_FLAG = 0x00800000;
+const int DISQUALIFIED_FLAG = 0x00400000;
 
 const int MAX_TEAMS = 32;// Arbitrary array size
 
 const vec4 BACKGROUND_COLOR = vec4(0.1, 0.1, 0.1, 0.35);// Background color of progress bar
 
 const vec4 CAPTURE_BAR_BORDER_COLOR = vec4(0.5, 0.5, 0.5, 1.0);// The color of the outline of the capture bar
+
+const float DISQUALIFIED_OPACITY = 0.4;// The opacity of a bar for a disqualified team
 
 const float BORDER_THICKNESS = 1;// Thickness of outline in pixels
 
@@ -25,7 +28,10 @@ uniform float[MAX_TEAMS + 1] progress;// The progress level for each ally team a
 uniform int progressBarData;// 16 least significant bits are the index of the color in the colors array above
 							//  8 most significant bits are always zero since lua uses floats
 							//  8 remaining middle bits define various flags:
-							//    MSb = 1 for capture bar, 0 for not capture bar
+							//    MSb
+							//    bit 23 = 1 for capture bar, 0 for not capture bar
+							//    bit 22 = 1 for disqualified, 0 for not disqualified
+							//    LSb
 
 in vec2 uvCoord;
 
@@ -46,6 +52,11 @@ void main()
 	bool isCaptureBar = (progressBarData & CAPTURE_BAR_FLAG) != 0;
 	//if it is the capture bar, then our progress is at index MAX_TEAMS
 	int progressIndex = isCaptureBar ? MAX_TEAMS : colorIndex;
+	//second most significant bit specifies if the team is disqualified
+	bool isDisqualified = (progressBarData & DISQUALIFIED_FLAG) != 0;
+	if(isDisqualified) {
+		color.a = DISQUALIFIED_OPACITY;
+	}
 	//the color of the outline of the bar
 	vec4 borderColor = isCaptureBar ? CAPTURE_BAR_BORDER_COLOR : color;
 	

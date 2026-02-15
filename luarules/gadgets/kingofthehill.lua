@@ -45,6 +45,14 @@
 -- it checks where all capture-qualified units are and determines what the game state
 -- should be based on what teams are in and out of the hill.
 --
+-- The time that each ally team has been king is tracked in a table containing the number
+-- of frames for which they have been king. The time for which the current king has been king
+-- is not included in this table. Instead, the frame at which the current king became king is
+-- stored and the table is updated when the king changes.
+-- Moreover, for the team currently capturing the hill, the frame at which the capturing will
+-- be complete is stored along with the direction of the capture (whether they are capturing
+-- or losing the hill).
+--
 -- There are a number of classes used in this gadget which are explained below.
 -- Set:
 --   The set class is just a collection of stuff. It mimics the Java Set class.
@@ -60,13 +68,19 @@
 -- CircleMapArea:
 --   A subclass of MapArea for circular areas.
 --
--- TODO: add more documentation
+-- Goals (TODO)
 --
--- King Counting
+--   Add mod options for buildings exploding in hill and no damage in startbox
 --
--- Capturing
+--   Figure out a way to have global LOS just inside the hill
+--     Would be possible for circular hills with some sort of unit that gives LOS, but that
+--     would not work for rectangular hills
 --
--- UI Information
+--   Figure out how to make a better lobby interface for setting the hill region (like the start box interface)
+--
+--   Handle saved games
+--
+--   Add GG api functions for game state manipulation
 --
 -----------------------------------------------------------------------------------------------
 
@@ -91,6 +105,7 @@ local Spring = Spring
 local Game = Game
 local mapSizeX = Game.mapSizeX
 local mapSizeZ = Game.mapSizeZ
+local squareSize = Game.squareSize
 local UnitDefs = UnitDefs
 local UnitDefNames = UnitDefNames
 local fps = Game.gameSpeed
@@ -411,15 +426,7 @@ local capturingCompleteFrame = RulesParamDataWrapper.new({paramName = "capturing
 -- true = up = progressing toward capturing the hill, false = down = losing progress that was previously made
 local capturingCountingUp = RulesParamDataWrapper.new({paramName = "capturingCountingUp", value = false})
 
--- #endregion Main Variables
-
---TODO global los inside hill -> not possible for rectangles
---Lobby: look at text box widget that displays mod options
---TODO left off: figure out how to make building footprint red when outside box in widget ---- NVM not possible
---TODO Saved Games??
---TODO add GG api functns
---TODO mod options for buildings exploding in hill, no damage in startbox
-
+-- #endregion
 
 -- Parses the string modoption that defines the hill area and returns a MapArea object
 local function parseAreaString(string)
@@ -670,7 +677,7 @@ function gadget:TeamDied(teamID)
 			kingTime:set(kingTime.value + frame - kingStartFrame.value)
 			resetKingAndCapturing()
 		end
-		kingTime:setAndSend(-kingTime.value)--negative value indicates disqualified
+		kingTime:setAndSend(math.min(-kingTime.value, -1e-16))--negative value indicates disqualified, set to very small negative value if it is zero because negative zero doesn't work
 	end
 end
 
@@ -681,9 +688,9 @@ function gadget:AllowCommand(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdO
 	local buildingUnitDef = UnitDefs[-cmdID]
 	if buildingUnitDef and (buildingUnitDef.isBuilding or buildingUnitDef.isStaticBuilder) then
 		local cmdX, _, cmdZ, rotation = table.unpack(cmdParams)
-		-- 0=south(-z), 1=east(+x), 2=north(+z), 3=west(-x), unitDef sizeX and sizeZ seem to refer to north/south orientation
-		local sizeX = (rotation % 2 == 0 and buildingUnitDef.xsize or buildingUnitDef.zsize) * 8 -- 8 "elmos" per footprint unit (https://springrts.com/wiki/Gamedev:UnitsOfMeasurement)
-		local sizeZ = (rotation % 2 == 0 and buildingUnitDef.zsize or buildingUnitDef.xsize) * 8
+		-- rotation 0=south(-z), 1=east(+x), 2=north(+z), 3=west(-x), unitDef sizeX and sizeZ seem to refer to north/south orientation
+		local sizeX = (rotation % 2 == 0 and buildingUnitDef.xsize or buildingUnitDef.zsize) * squareSize
+		local sizeZ = (rotation % 2 == 0 and buildingUnitDef.zsize or buildingUnitDef.xsize) * squareSize
 		local allyTeamId = teamToAllyTeam[unitTeam]
 		local allyTeamStartRect = startBoxes[allyTeamId]
 		if allyTeamStartRect:isBuildingInside(cmdX, cmdZ, sizeX, sizeZ) or (kingAllyTeam.value == allyTeamId and hillArea:isBuildingInside(cmdX, cmdZ, sizeX, sizeZ)) then

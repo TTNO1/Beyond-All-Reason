@@ -34,21 +34,13 @@
 -- contains a progress bar for each ally team indicating how close they are to winning. This
 -- widget also draws outlines on the map around each team's starting box and the hill region.
 --
--- TODO explain shaders and opengl once figured out
+-- The outlines on the map are drawn using a set of vertices on each outline and rendered
+-- as GL.LINE_LOOP. The progress bars are each rectangles with a custom fragment shader
+-- that colors the filled portion of the progress bar.
 --
--- There are a number of classes used in this widget which are explained below.
--- Set:
---   The set class is just a collection of stuff. It mimics the Java Set class.
--- MapArea:
---   Defines an area on the map such as a startbox or the hill region. This class has subclasses
---   for each shape.
--- RectMapArea:
---   A subclass of MapArea for rectangular areas.
--- CircleMapArea:
---   A subclass of MapArea for circular areas.
+-- Goals (TODO)
 --
---
--- TODO: add more documentation
+--   Figure out how to make building footprint red when trying to build outside start box
 --
 -----------------------------------------------------------------------------------------------
 
@@ -59,7 +51,7 @@ function widget:GetInfo()
 		author = "Saul Goodman",
 		date = "2025",
 		license = "MIT",
-		layer = 0,
+		layer = -10,--Must come before gui_advplayerslist
 		enabled = true
 	};
 end
@@ -69,6 +61,7 @@ local Spring = Spring
 local Game = Game
 local mapSizeX = Game.mapSizeX
 local mapSizeZ = Game.mapSizeZ
+local squareSize = Game.squareSize
 local UnitDefs = UnitDefs
 local UnitDefNames = UnitDefNames
 local fps = Game.gameSpeed
@@ -76,10 +69,12 @@ local vsx, vsy--view size x and y
 local gl = gl
 local GL = GL
 local VFS = VFS
-local bit = bit
 
-local screenCopyManager = WG['screencopymanager']
---local WG
+local tonumber = tonumber
+local string = string
+local math = math
+table.unpack = table.unpack or unpack
+local table = table
 -- #endregion
 
 -- /////////////////////////////
@@ -164,16 +159,6 @@ end
 -- ---- Util Functions & Variables ----
 -- ------------------------------------
 
-local tonumber = tonumber
-
-local string = string
-
-local math = math
-
-table.unpack = table.unpack or unpack
-
-local table = table
-
 local function distance(x1, z1, x2, z2)
 	return math.sqrt((x2-x1)^2 + (z2-z1)^2)
 end
@@ -208,7 +193,7 @@ local function dump(o)
 	else
 	   return tostring(o)
 	end
- end
+end
 
 -- /////////////////////////////
 -- #endregion
@@ -234,16 +219,23 @@ local mapAreaLineVertexVerticalShift = 5
 --Defines the default hill area used if the mod option string is invalid
 local defaultHillAreaArgs = {left = 75*mapSizeX/mapAreaScale, right = 125*mapSizeX/mapAreaScale, top = 125*mapSizeZ/mapAreaScale, bottom = 75*mapSizeZ/mapAreaScale}
 
+--Defines the name of the player list widget for ui box positioning
+local playerListWidgetName = "advplayerlist_api"
+
+--Defines the order in which to look for the widget below ours. The first widget that is found is used as
+--the one below ours for positioning the ui box
+local belowWidgetsInOrder = {"displayinfo", "unittotals", "music", playerListWidgetName}
+
 --Defines the default width of the UI box if there are no boxes below it to go off of
 local defaultUIBoxWidth = 340
 
---Defines the top and bottom padding on the box in pixels
+--Defines the top and bottom padding on the ui box in pixels
 local uiBoxVerticalPadding = 10
 
---Defines the horizontal padding in the box relative to box width
+--Defines the horizontal padding in the ui box relative to box width
 local uiBoxHorizontalPadding = 0.05
 
---Defines the width of a team progress bar relative to box width
+--Defines the width of a team progress bar relative to the ui box width
 local progressBarWidth = 0.7
 
 --Deifnes the height of a team progress bar in pixels
@@ -264,8 +256,11 @@ local timerLeftMargin = 0.05
 --Defines the font size of the timers next to the progress bars
 local timerFontSize = 13
 
---Defines the text color of the timers next to the progress bars
+--Defines the text color of the timers next to the progress bars (rgba)
 local timerFontColor = {1, 1, 1, 1}
+
+--Defines the text color of the timer next to the progress bar for a disqualified team
+local disqualifiedTimerFontColor = {0.7, 0.7, 0.7, 0.5}
 
 --Defines the path to the font file for the text timers
 local timerFontPath = "fonts/Exo2-Regular.otf"
@@ -289,6 +284,10 @@ local framesPerUpdate = 5
 -- This represents the number of frames after the screen is resized for which we will
 -- update the widget box size to match those below it
 local maxScreenResizeCountdown = 10
+
+--Defines the number of times to check if a team was disqualified after one of its
+--member teams dies. Used to prevent checking every update.
+local numDisqualifiedChecks = 5
 
 -- #endregion
 
@@ -337,13 +336,19 @@ local numAllyTeams = 0
 -- allyTeamId to RectMapArea defining the allyTeam's starting area
 local startBoxes = {}
 
+-- a table of allyTeamId to the average color of all the constituent teams
+local allyTeamColors = {}
+
+-- the user's ally team
+local myAllyTeam
+
+-- the user's start box as a RectMapArea object
+local myStartBox
+
 -- All game state variables below are only updated on an interval and may not exactly match the server at all times
 
 -- allyTeamId to number of frames for which that team has held the hill
 local allyTeamKingTime = {}
-
--- a table of allyTeamId to the average color of all the constituent teams
-local allyTeamColors = {}
 
 --The current king ally team's id.
 local kingAllyTeam
@@ -361,6 +366,10 @@ local capturingCompleteFrame
 -- true = up = progressing toward capturing the hill, false = down = losing progress that was previously made
 local capturingCountingUp
 
+-- allyTeamId to counter indicating the number of times remaining to check if the ally team is disqualified
+-- this is used so that we are not checking every team every update but only teams who recently died
+local disqualifiedTeamChecks = {}
+
 -- #endregion
 
 --//////////////////////////
@@ -370,8 +379,17 @@ local capturingCountingUp
 -- UI Variables
 -- ------------
 
---Contains the position of the UI box. Used for WG API functions
+--Constants
+local screenCopyManager = WG['screencopymanager']
+local flowUIDraw
+
+--Contains the position of the UI box. Used for WG API function 'GetPosition'
 local uiBoxPosition
+
+--Contains the position of the player list widget UI box. This is used to check for
+--clicks on the player list and update our box size whenever it is clicked since
+--clicking certain buttons in the player list causes it to change size
+local playerListPosition
 
 --The shaders for the progress bars
 local progressBarShader = gl.CreateShader({vertex = VFS.LoadFile(progressBarVertexShaderPath),
@@ -493,6 +511,9 @@ end
 -- UI Classes
 -- ----------
 
+-- This class is used to set the value of an OpenGL uniform. Its main purpose is to
+-- prevent setting the uniform to the same value multiple times. Each instance of this
+-- class represents one uniform value or index in a uniform array.
 local UniformValue = {
 	mt = {},
 	Type = {INT = 1, FLOAT = 2, VECTOR = 3, ARRAY = 4, MATRIX = 5}
@@ -548,7 +569,9 @@ function UniformValue:equalsLastValue(newValue)
 	return self.lastValue == newValue
 end
 
--- A class for a generic UI element, by default, renders a basic FlowUI box
+-- A class for a generic UI element, by default, renders a basic FlowUI box. This class and all its
+-- subclasses below update the position and data associated with the element on a draw call whenever
+-- it is invalidated.
 local UIElement = {
 	mt = {}
 }
@@ -594,7 +617,7 @@ end
 function UIElement:updateData()
 	gl.DeleteList(self.displayList)
 	self.displayList = gl.CreateList(function ()
-		WG.FlowUI.Draw.Element(self.absLeft, self.absBottom, self.absRight, self.absTop, self.cornerTL, self.cornerTR, self.cornerBR, self.cornerBL, self.ptl, self.ptr, self.pbr, self.pbl,  self.opacity, self.color1, self.color2, self.bgpadding)
+		flowUIDraw.Element(self.absLeft, self.absBottom, self.absRight, self.absTop, self.cornerTL, self.cornerTR, self.cornerBR, self.cornerBL, self.ptl, self.ptr, self.pbr, self.pbl,  self.opacity, self.color1, self.color2, self.bgpadding)
 	end)
 	self.dataInvalid = false
 end
@@ -646,7 +669,7 @@ end
 local UIBar = {
 	mt = {},
 	ProgressBarData = UniformValue.new({name = "progressBarData", shader = progressBarShader, value = 0, type = UniformValue.Type.INT}),
-	Flags = {CAPTURE_BAR = 0x00800000}
+	Flags = {CAPTURE_BAR = 0x00800000, DISQUALIFIED = 0x00400000}
 }
 setmetatable(UIBar, UIElement.mt)
 UIBar.mt.__index = UIBar
@@ -675,11 +698,11 @@ function UIBar:draw()
 end
 function UIBar:updatePosition()
 	self:computeAbsoluteRect()
-	--Progress bar region clip positions
-	local left = convertToClipSpace(self.absLeft, nil)
-	local right = convertToClipSpace(self.absRight, nil)
-	local top = convertToClipSpace(nil, self.absTop)
-	local bottom = convertToClipSpace(nil, self.absBottom)
+	--Progress bar region clip positions. Floor and ceil to round to nearest pixel to prevent fractional pixel artifacts
+	local left = convertToClipSpace(math.floor(self.absLeft), nil)
+	local right = convertToClipSpace(math.ceil(self.absRight), nil)
+	local top = convertToClipSpace(nil, math.ceil(self.absTop))
+	local bottom = convertToClipSpace(nil, math.floor(self.absBottom))
 	--Triangle strip vertices with uv
 	local vertices = {
 		left, top, 0, 1,
@@ -703,6 +726,14 @@ function UIBar:setProgress(progress)
 end
 function UIBar:setAllyTeam(allyTeamId)
 	self.allyTeamIndex = (allyTeamIndices[allyTeamId] or 1) - 1
+end
+function UIBar:setDisqualified(value)
+	local flag = UIBar.Flags.DISQUALIFIED
+	if value then
+		self.flags = math.bit_or(self.flags, flag)
+	else
+		self.flags = math.bit_and(self.flags, math.bit_inv(flag))
+	end
 end
 
 -- A class for map area outlines rendered on the world
@@ -869,7 +900,10 @@ function UITextTimer.new(args)
 	setmetatable(args, UITextTimer.mt)
 	args.fontSize = args.fontSize or timerFontSize
 	args.color = args.color or timerFontColor
+	args.originalColor = args.color
+	args.disqualifiedColor = args.disqualifiedColor or disqualifiedTimerFontColor
 	args.currentTimeSecs = math.ceil(args.totalTimeSecs)
+	args.disqualified = false
 	return args
 end
 function UITextTimer:draw()
@@ -909,14 +943,18 @@ function UITextTimer:setProgress(progress)
 		self:invalidateData()
 	end
 end
+function UITextTimer:setDisqualified(value)
+	if self.disqualified == value then
+		return
+	end
+	self.disqualified = value
+	self.color = value and self.disqualifiedColor or self.originalColor
+	self:invalidateData()
+end
 
 --///////////////
 -- #endregion
 --///////////////
-
-
---TODO add WG api functions (GetPosition)
-
 
 -- Parses the string modoption that defines the hill area and returns args for a MapArea constructor
 local function parseAreaString(string)
@@ -1001,6 +1039,7 @@ function widget:Initialize()
 			allyTeamIndices[allyTeamId] = index
 			numAllyTeams = numAllyTeams + 1
 			allyTeamKingTime[allyTeamId] = 0
+			disqualifiedTeamChecks[allyTeamId] = 1--Check once initially in case a team starts disqualified (e.g. if the widget is reloaded)
 			
 			local left, bottom, right, top = Spring.GetAllyTeamStartBox(allyTeamId)
 			local startBox = RectMapArea.new{left = left, top = top, right = right, bottom = bottom, allyTeam = allyTeamId}
@@ -1050,13 +1089,21 @@ function widget:Initialize()
 	allyTeamColorsUBO:Define(1, fragmentShaderMaxTeams)--seconds arg expects size in number of Vec4s
 	allyTeamColorsUBO:Upload(allyTeamColorsVec4Array)
 	
+	myAllyTeam = Spring.GetMyAllyTeamID()
+	myStartBox = startBoxes[myAllyTeam]
+	
 	--Remove the call-in that cancels unpermitted build commands if building outside boxes is allowed
 	if buildOutsideBoxes then
-		widgetHandler.RemoveCallIn(nil, "AllowCommand")--TODO see if there is a widget side to this else remove
+		widgetHandler.RemoveCallIn(nil, "CommandNotify")
 	end
 	
 	vsx, vsy = Spring.GetViewGeometry()
 	widget:ViewResize(vsx, vsy)
+	
+	WG.kingofthehill_ui = {}
+	WG.kingofthehill_ui.GetPosition = function()
+		return {uiBoxPosition.top, uiBoxPosition.left, uiBoxPosition.bottom, uiBoxPosition.right, uiBoxPosition.scale}
+	end
 	
 end
 
@@ -1064,8 +1111,9 @@ end
 -- We make our box the same width as the below box and put it right above
 -- Returns top, left, bottom, right, scale
 local function getBelowBoxPosition()
-	
-	local belowWidgetsInOrder = {"displayinfo", "unittotals", "music", "advplayerlist_api"}
+	local playerListWG = WG[playerListWidgetName]
+	local pos = playerListWG and playerListWG.GetPosition() or {0, vsx, 0, vsx}
+	playerListPosition = {top = pos[1], left = pos[2], bottom = pos[3], right = pos[4]}
 	
 	for _, widgetName in ipairs(belowWidgetsInOrder) do
 		local widgetWG = WG[widgetName]
@@ -1081,7 +1129,6 @@ local function getBelowBoxPosition()
 	
 	local scale = Spring.GetConfigFloat("ui_scale", 1)
 	return {0, math.floor(vsx-(defaultUIBoxWidth*scale)), 0, vsx, scale}
-	
 end
 
 -- Updates uiBoxPosition to the correct value
@@ -1121,27 +1168,63 @@ local function updateUIBoxPosition()
 		local uiBar = allyTeamProgressBars[allyTeamId]
 		local uiTimer = allyTeamProgressTimers[allyTeamId]
 		uiBar:setPos({top = barTopRelCoord, bottom = 1 - (barTopRelCoord + relativeBarHeight), left = uiBoxHorizontalPadding, right = 1 - (uiBoxHorizontalPadding + progressBarWidth)})
-		uiTimer:setPos({top = uiBar.top, bottom = uiBar.bottom, left = uiBoxHorizontalPadding + progressBarWidth + timerLeftMargin, right = 1 - uiBoxHorizontalPadding})
+		uiTimer:setPos({top = uiBar.top, bottom = uiBar.bottom, left = uiBoxHorizontalPadding + progressBarWidth + timerLeftMargin, right = uiBoxHorizontalPadding})
 		barTopRelCoord = barTopRelCoord + relativeBarHeight + relativeBarVerticalSpacing
 	end
 	
 	local captureBarRelativeHeight = scaledCaptureBarHeight / uiBoxPosition.height
 	local captureBarRelativeTopMargin = scaledCaptureBarTopMargin / uiBoxPosition.height
 	captureProgressBar:setPos({top = barTopRelCoord - relativeBarVerticalSpacing + captureBarRelativeTopMargin, bottom = relativeBoxVerticalPadding, left = uiBoxHorizontalPadding, right = 1 - (uiBoxHorizontalPadding + progressBarWidth)})
-	captureProgressTimer:setPos({top = captureProgressBar.top, bottom = captureProgressBar.bottom, left = uiBoxHorizontalPadding + progressBarWidth + timerLeftMargin, right = 1 - uiBoxHorizontalPadding})
+	captureProgressTimer:setPos({top = captureProgressBar.top, bottom = captureProgressBar.bottom, left = uiBoxHorizontalPadding + progressBarWidth + timerLeftMargin, right = uiBoxHorizontalPadding})
 	
+end
+
+-- Triggers the UI box position to be updated for the next couple frames.
+-- This is used because we don't know the order of the updating of the boxes below ours, so
+-- so we just update many times.
+local function triggerUIBoxResize()
+	updateUIBoxPosition()
+	screenResizeCountdown = maxScreenResizeCountdown
 end
 
 -- Called whenever the window is resized
 function widget:ViewResize(vs_x, vs_y)
 	vsx = vs_x
 	vsy = vs_y
+	flowUIDraw = WG.FlowUI.Draw
 	timerFont = WG.fonts.getFont(timerFontPath)
-	--WG = _G.WG TODO localize flow ui
 	-- Call here as well as in widget:DrawScreen because I have no idea the order
 	-- of other widgets resizing so we want the best chance of getting it right
-	updateUIBoxPosition()
-	screenResizeCountdown = maxScreenResizeCountdown
+	triggerUIBoxResize()
+end
+
+-- Called whenever a player's status changes e.g. becoming a spectator. Also called when changing teams.
+-- Used to resize ui box whenever the player list box below changes size
+function widget:PlayerChanged(playerID)
+	triggerUIBoxResize()
+end
+
+-- Called whenever a new player joins the game.
+-- Used to resize ui box whenever the player list box below changes size
+function widget:PlayerAdded(playerID)
+	triggerUIBoxResize()
+end
+
+-- Called whenever a player is removed from the game.
+-- Used to resize ui box whenever the player list box below changes size
+function widget:PlayerRemoved(playerID, reason)
+	triggerUIBoxResize()
+end
+
+--Called when a mouse button is pressed. The button parameter supports up to 7 buttons.
+--Must return true for MouseRelease and other functions to be called.
+--Used to resize our ui box whenever the player list box is clicked since it can change size when certain buttons are clicked.
+function widget:MousePress(x, y, button)
+	--If left click and inside player list box
+	if button == 1 and x <= playerListPosition.right and x >= playerListPosition.left and y >= playerListPosition.bottom and y <= playerListPosition.top then
+		triggerUIBoxResize()
+	end
+	return false
 end
 
 local updateCounter = 0
@@ -1166,7 +1249,7 @@ function widget:GameFrame(frame)
 		for _, allyTeamId in ipairs(allyTeams) do
 			local kingTime = Spring.GetGameRulesParam("allyTeamKingTime" .. allyTeamId)
 			allyTeamKingTime[allyTeamId] = kingTime
-			local progress = math.abs(kingTime) / winKingTimeFrames--TODO handle disqualified teams (negative time)
+			local progress = math.abs(kingTime) / winKingTimeFrames
 			allyTeamProgressBars[allyTeamId]:setProgress(progress)
 			allyTeamProgressTimers[allyTeamId]:setProgress(progress)
 		end
@@ -1177,6 +1260,18 @@ function widget:GameFrame(frame)
 		local newKingProgress = (allyTeamKingTime[kingAllyTeam] + (frame - kingStartFrame)) / winKingTimeFrames
 		allyTeamProgressBars[kingAllyTeam]:setProgress(newKingProgress)
 		allyTeamProgressTimers[kingAllyTeam]:setProgress(newKingProgress)
+	end
+	
+	--Check for disqualified teams
+	for allyTeamId, numChecks in pairs(disqualifiedTeamChecks) do
+		local isDisqualified = (Spring.GetGameRulesParam("allyTeamKingTime" .. allyTeamId)) < 0
+		if isDisqualified then
+			disqualifiedTeamChecks[allyTeamId] = nil
+			allyTeamProgressBars[allyTeamId]:setDisqualified(true)
+			allyTeamProgressTimers[allyTeamId]:setDisqualified(true)
+		else
+			disqualifiedTeamChecks[allyTeamId] = numChecks > 1 and numChecks - 1 or nil
+		end
 	end
 	
 	local newCapturingCompleteFrame = Spring.GetGameRulesParam("capturingCompleteFrame")
@@ -1198,8 +1293,15 @@ function widget:GameFrame(frame)
 	captureProgressTimer:setProgress(captureProgress)
 end
 
+--Called when a team dies. Used to signal that we should check for disqualified teams.
+--We also resize the ui box because removing a team changes the sizes of the lower boxes.
+function widget:TeamDied(teamID)
+	local allyTeamId = teamToAllyTeam[teamID]
+	disqualifiedTeamChecks[allyTeamId] = numDisqualifiedChecks
+	triggerUIBoxResize()
+end
+
 function widget:UnsyncedHeightMapUpdate(x1, z1, x2, z2)--TODO consider using height texture in vertex shader
-	local squareSize = Game.squareSize
 	x1, z1, x2, z2 = x1 * squareSize, z1 * squareSize, x2 * squareSize, z2 * squareSize
 	
 	for _, startArea in pairs(startBoxes) do
@@ -1217,7 +1319,7 @@ end
 function widget:DrawScreen()
 	
 	if screenResizeCountdown > 0 then
-		-- Call here as well as in widget:ViewResize because I have no idea the order
+		-- Update the UI box position multiple times because I have no idea the order
 		-- of other widgets resizing so we want the best chance of getting it right
 		updateUIBoxPosition()
 		screenResizeCountdown = screenResizeCountdown - 1
@@ -1262,12 +1364,29 @@ function widget:DrawWorldPreUnit()
 	
 end
 
+-- Called when a command is issued. Returning true deletes the command and does not send it through the network.
+-- Used to block build commands that are outside of permitted areas if buildOutsideBoxes is false
+function widget:CommandNotify(cmdID, cmdParams, cmdOptions)
+	local buildingUnitDef = UnitDefs[-cmdID]
+	if buildingUnitDef and (buildingUnitDef.isBuilding or buildingUnitDef.isStaticBuilder) then
+		local cmdX, _, cmdZ, rotation = table.unpack(cmdParams)
+		-- rotation 0=south(-z), 1=east(+x), 2=north(+z), 3=west(-x), unitDef sizeX and sizeZ seem to refer to north/south orientation
+		local sizeX = (rotation % 2 == 0 and buildingUnitDef.xsize or buildingUnitDef.zsize) * squareSize
+		local sizeZ = (rotation % 2 == 0 and buildingUnitDef.zsize or buildingUnitDef.xsize) * squareSize
+		if myStartBox:isBuildingInside(cmdX, cmdZ, sizeX, sizeZ) or (kingAllyTeam == myAllyTeam and hillArea:isBuildingInside(cmdX, cmdZ, sizeX, sizeZ)) then
+			return false
+		end
+		return true
+	end
+	return false
+end
+
 function widget:Shutdown()
 	
 	gl.DeleteShader(progressBarShader)
 	
 	gl.DeleteShader(mapAreaShader)
 	
-	--TODO remove WG API functions
+	WG.kingofthehill_ui = nil
 	
 end
