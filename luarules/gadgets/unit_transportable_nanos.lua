@@ -51,7 +51,7 @@ function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpt
 	if cmdID == CMD_LOAD_UNITS then
 		if #cmdParams == 1 then -- if unit is target
 			if ValidUnitID(cmdParams[1]) and GetUnitTeam(cmdParams[1]) ~= teamID and Nanos[GetUnitDefID(cmdParams[1])] then
-				return false
+				return false--TODO make this work for area load command
 			end
 		end
 	else	 -- CMD_UNLOAD_UNITS
@@ -60,7 +60,7 @@ function gadget:AllowCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpt
 			if #intrans >= 1 then
 				-- no unloading underwater
 				local _,y,_ = GetGroundNormal(cmdParams[1], cmdParams[3])
-				if Nanos[GetUnitDefID(intrans[1])] and (cmdParams[2] < 0 or y < 0.9) then
+				if Nanos[GetUnitDefID(intrans[1])] and (cmdParams[2] < 0 or y < 0.9) then--TODO make this actually work
 					return false
 				end
 			end
